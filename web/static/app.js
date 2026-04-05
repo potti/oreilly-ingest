@@ -28,11 +28,17 @@ function reasonToLabel(reason) {
 
 async function checkAuth() {
     const el = document.getElementById('auth-status');
-    const loginBtn = document.getElementById('login-btn');
     const statusDot = el?.querySelector('.status-dot');
     const statusText = el?.querySelector('.status-text');
-
     const cookieHelp = document.getElementById('cookie-help-section');
+
+    function setCheckingUi() {
+        if (!el || !statusDot) return;
+        if (statusText) statusText.textContent = 'Checking...';
+        statusDot.className =
+            'status-dot w-2 h-2 rounded-full bg-zinc-300 animate-pulse-subtle';
+        el.className = 'flex items-center gap-2 text-sm text-zinc-500';
+    }
 
     function setValidUi(valid, reasonLabel) {
         if (cookieHelp) {
@@ -43,14 +49,14 @@ async function checkAuth() {
             if (statusText) statusText.textContent = 'Session Valid';
             statusDot.className = 'status-dot w-2 h-2 rounded-full bg-emerald-500';
             el.className = 'flex items-center gap-2 text-sm text-emerald-600';
-            if (loginBtn) loginBtn.classList.add('hidden');
         } else {
             if (statusText) statusText.textContent = reasonLabel;
             statusDot.className = 'status-dot w-2 h-2 rounded-full bg-amber-500';
             el.className = 'flex items-center gap-2 text-sm text-amber-600';
-            if (loginBtn) loginBtn.classList.remove('hidden');
         }
     }
+
+    setCheckingUi();
 
     try {
         const res = await fetch(`${API}/api/status`);
@@ -64,7 +70,6 @@ async function checkAuth() {
     } catch (err) {
         console.error('Auth check failed:', err);
         setValidUi(false, 'Status check failed');
-        if (loginBtn) loginBtn.classList.remove('hidden');
     }
 }
 

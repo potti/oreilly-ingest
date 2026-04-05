@@ -23,6 +23,18 @@ function dbgVerbose(...args) {
     if (oreillyDebugEnabled()) console.log('[oreilly-ingest]', ...args);
 }
 
+/** Always log errors to the console (full visibility). */
+function logError(...args) {
+    console.error('[oreilly-ingest]', ...args);
+}
+
+function logErrorDetail(context, err) {
+    logError(context, err);
+    if (err && typeof err === 'object' && err.stack) {
+        console.error(err.stack);
+    }
+}
+
 /** Paste in DevTools on learning.oreilly.com (Console) after signing in. */
 const COOKIE_CONSOLE_CMD =
     "JSON.stringify(document.cookie.split(';').map(c=>c.split('=')).reduce((r,[k,v])=>({...r,[k.trim()]:v?.trim()}),{}))";
@@ -151,7 +163,8 @@ async function checkAuth() {
         try {
             data = rawText ? JSON.parse(rawText) : {};
         } catch (parseErr) {
-            dbg('checkAuth: JSON.parse failed', parseErr, rawText.slice(0, 200));
+            logErrorDetail('checkAuth: JSON.parse failed', parseErr);
+            logError('checkAuth: body preview', rawText.slice(0, 200));
             throw parseErr;
         }
 
@@ -174,7 +187,7 @@ async function checkAuth() {
             dbg('checkAuth: error on stale seq, ignored', { seq, authCheckSeq, err });
             return;
         }
-        console.error('[oreilly-ingest] checkAuth failed:', err);
+        logErrorDetail('checkAuth failed', err);
         setValidUi(false, 'Status check failed');
     }
 }
@@ -183,7 +196,7 @@ function showCookieModal() {
     const modal = document.getElementById('cookie-modal');
     dbg('showCookieModal', { found: !!modal });
     if (!modal) {
-        console.error('[oreilly-ingest] showCookieModal: #cookie-modal not found');
+        logError('showCookieModal: #cookie-modal not found');
         return;
     }
     modal.classList.remove('hidden');
@@ -197,7 +210,7 @@ function hideCookieModal() {
     const modal = document.getElementById('cookie-modal');
     dbg('hideCookieModal', { found: !!modal });
     if (!modal) {
-        console.error('[oreilly-ingest] hideCookieModal: #cookie-modal not found');
+        logError('hideCookieModal: #cookie-modal not found');
         return;
     }
     modal.classList.add('hidden');
@@ -252,7 +265,7 @@ async function saveCookies() {
         try {
             data = rawText ? JSON.parse(rawText) : {};
         } catch (parseErr) {
-            console.error('[oreilly-ingest] saveCookies: response is not JSON', parseErr);
+            logErrorDetail('saveCookies: response is not JSON', parseErr);
             errorEl.textContent = 'Server returned non-JSON response';
             errorEl.classList.remove('hidden');
             return;
@@ -291,10 +304,10 @@ async function saveCookies() {
             await checkAuth();
             dbg('saveCookies: checkAuth finished');
         } catch (authErr) {
-            console.error('[oreilly-ingest] saveCookies: checkAuth threw', authErr);
+            logErrorDetail('saveCookies: checkAuth threw', authErr);
         }
     } catch (err) {
-        console.error('[oreilly-ingest] saveCookies failed:', err);
+        logErrorDetail('saveCookies failed', err);
         errorEl.textContent = 'Failed to save cookies';
         errorEl.classList.remove('hidden');
     }
@@ -304,31 +317,89 @@ async function loadDefaultOutputDir() {
     try {
         dbgVerbose('loadDefaultOutputDir: GET /api/settings');
         const res = await fetch(`${API}/api/settings`);
-        const data = await res.json();
+        const raw = await res.text();
+        dbgVerbose('loadDefaultOutputDir: status', res.status, 'len', raw.length);
+        let data;
+        try {
+            data = raw ? JSON.parse(raw) : {};
+        } catch (e) {
+            logErrorDetail('loadDefaultOutputDir: JSON.parse failed', e);
+            logError('loadDefaultOutputDir: body preview', raw.slice(0, 200));
+            return;
+        }
+        if (!res.ok) {
+            logError('loadDefaultOutputDir: HTTP error', res.status, data);
+            return;
+        }
         defaultOutputDir = data.output_dir;
         dbgVerbose('loadDefaultOutputDir: output_dir=', defaultOutputDir);
     } catch (err) {
-        console.error('[oreilly-ingest] loadDefaultOutputDir failed:', err);
+        logErrorDetail('loadDefaultOutputDir failed', err);
     }
 }
 
 async function search(query) {
-    dbgVerbose('search: query=', query);
+    dbg('search: start', { query, api: API });
     const loader = document.getElementById('search-loader');
     const container = document.getElementById('search-results');
+
+    if (!loader || !container) {
+        logError('search: missing DOM', {
+            hasLoader: !!loader,
+            hasContainer: !!container,
+        });
+        return;
+    }
+
+    const url = `${API}/api/search?q=${encodeURIComponent(query)}`;
+    const SEARCH_TIMEOUT_MS = 120000;
+    const ac = new AbortController();
+    const timeoutId = setTimeout(() => {
+        logError('search: aborting fetch (timeout ms)', SEARCH_TIMEOUT_MS, url);
+        ac.abort();
+    }, SEARCH_TIMEOUT_MS);
 
     loader.classList.remove('hidden');
 
     try {
-        const res = await fetch(`${API}/api/search?q=${encodeURIComponent(query)}`);
-        let data;
+        dbg('search: fetch', url);
+        let res;
         try {
-            data = await res.json();
-        } catch (parseErr) {
-            throw new Error('Invalid JSON from search');
+            res = await fetch(url, { signal: ac.signal });
+        } catch (fetchErr) {
+            logErrorDetail('search: fetch threw', fetchErr);
+            throw fetchErr;
         }
 
-        loader.classList.add('hidden');
+        dbg('search: response headers', {
+            ok: res.ok,
+            status: res.status,
+            statusText: res.statusText,
+            contentType: res.headers.get('Content-Type'),
+        });
+
+        let rawText;
+        try {
+            rawText = await res.text();
+        } catch (textErr) {
+            logErrorDetail('search: res.text() threw', textErr);
+            throw textErr;
+        }
+
+        dbg('search: body', {
+            length: rawText.length,
+            preview: rawText.slice(0, 500),
+        });
+
+        let data;
+        try {
+            data = rawText ? JSON.parse(rawText) : {};
+        } catch (parseErr) {
+            logErrorDetail('search: JSON.parse failed', parseErr);
+            logError('search: raw body (first 300 chars)', rawText.slice(0, 300));
+            throw parseErr;
+        }
+
         container.innerHTML = '';
         container.classList.remove('has-expanded');
         currentExpandedCard = null;
@@ -336,6 +407,7 @@ async function search(query) {
 
         if (!res.ok) {
             const msg = data?.error || `Search failed (HTTP ${res.status})`;
+            logError('search: HTTP not OK', { status: res.status, msg, data });
             container.innerHTML = `
                 <div class="text-center py-16 text-red-600">
                     <p>${escapeHtml(msg)}</p>
@@ -345,9 +417,16 @@ async function search(query) {
         }
 
         let list = data.results;
-        if (!Array.isArray(list)) list = [];
+        if (!Array.isArray(list)) {
+            logError('search: data.results is not an array', {
+                type: typeof list,
+                dataKeys: data ? Object.keys(data) : [],
+            });
+            list = [];
+        }
 
         if (list.length === 0) {
+            dbg('search: empty results array', { data });
             container.innerHTML = `
                 <div class="text-center py-16 text-zinc-500">
                     <p class="text-lg">No books found for "${escapeHtml(query)}"</p>
@@ -357,9 +436,13 @@ async function search(query) {
             return;
         }
 
+        dbg('search: rendering', list.length, 'raw hits');
         for (const raw of list) {
             const book = normalizeSearchHit(raw);
-            if (!book) continue;
+            if (!book) {
+                logError('search: normalizeSearchHit returned null', { raw });
+                continue;
+            }
             try {
                 const div = document.createElement('article');
                 div.className =
@@ -370,12 +453,13 @@ async function search(query) {
                 setupBookCardEvents(div, book);
                 container.appendChild(div);
             } catch (rowErr) {
-                console.error('Search row render failed:', rowErr, raw);
+                logErrorDetail('search: row render failed', rowErr);
+                logError('search: row raw', raw);
             }
         }
 
         if (!container.children.length) {
-            dbgVerbose('search: no cards rendered after loop');
+            logError('search: no cards after loop (all rows failed?)');
             container.innerHTML = `
                 <div class="text-center py-16 text-zinc-500">
                     <p class="text-lg">No books could be displayed</p>
@@ -383,16 +467,29 @@ async function search(query) {
                 </div>
             `;
         } else {
-            dbgVerbose('search: rendered', container.children.length, 'cards');
+            dbg('search: done', container.children.length, 'cards');
         }
     } catch (err) {
-        loader.classList.add('hidden');
-        console.error('[oreilly-ingest] search failed:', err);
-        container.innerHTML = `
-            <div class="text-center py-16 text-red-600">
-                <p>Search failed. Please try again.</p>
-            </div>
-        `;
+        logErrorDetail('search: failed', err);
+        try {
+            if (container) {
+                container.innerHTML = `
+                    <div class="text-center py-16 text-red-600">
+                        <p>Search failed: ${escapeHtml(err?.message || String(err))}</p>
+                    </div>
+                `;
+            }
+        } catch (uiErr) {
+            logErrorDetail('search: could not render error UI', uiErr);
+        }
+    } finally {
+        clearTimeout(timeoutId);
+        try {
+            loader.classList.add('hidden');
+        } catch (loaderErr) {
+            logError('search: could not hide loader', loaderErr);
+        }
+        dbg('search: finally (loader hidden)');
     }
 }
 
@@ -832,6 +929,7 @@ async function loadChaptersIfNeeded(cardElement, bookId) {
         chaptersCache[bookId] = data.chapters;
         renderChapters(cardElement, data.chapters);
     } catch (err) {
+        logErrorDetail(`loadChaptersIfNeeded failed (bookId=${bookId})`, err);
         listContainer.innerHTML = '<p class="text-sm text-red-600 py-2">Failed to load chapters</p>';
     }
 }
@@ -887,6 +985,7 @@ async function expandBook(cardElement, bookId) {
         descEl.innerHTML = book.description || 'No description available.';
         descEl.classList.remove('animate-pulse-subtle');
     } catch (error) {
+        logErrorDetail(`expandBook fetch details failed (bookId=${bookId})`, error);
         const descEl = expanded.querySelector('.book-description');
         descEl.textContent = 'Failed to load details.';
         descEl.classList.remove('animate-pulse-subtle');
@@ -1057,6 +1156,7 @@ async function download(cardElement) {
 
         pollProgress(cardElement);
     } catch (err) {
+        logErrorDetail(`download POST failed (bookId=${cardElement.dataset.bookId || 'unknown'})`, err);
         cardElement.querySelector('.progress-status').textContent = 'Download failed. Please try again.';
         downloadBtn.classList.remove('hidden');
         cancelBtn.classList.add('hidden');
@@ -1071,7 +1171,7 @@ async function cancelDownload(cardElement) {
     try {
         await fetch(`${API}/api/cancel`, { method: 'POST' });
     } catch (err) {
-        console.error('Cancel request failed:', err);
+        logErrorDetail('cancel request failed', err);
     }
 }
 
@@ -1158,7 +1258,7 @@ async function pollProgress(cardElement) {
             setTimeout(() => pollProgress(cardElement), 500);
         }
     } catch (err) {
-        console.error('Progress polling failed:', err);
+        logErrorDetail('progress polling failed', err);
         setTimeout(() => pollProgress(cardElement), 1000);
     }
 }
@@ -1183,10 +1283,10 @@ async function revealFile(path) {
         });
         const data = await res.json();
         if (data.error) {
-            console.error('Reveal failed:', data.error);
+            logError('reveal failed:', data.error);
         }
     } catch (err) {
-        console.error('Reveal request failed:', err);
+        logErrorDetail('reveal request failed', err);
     }
 }
 
@@ -1209,7 +1309,7 @@ async function browseOutputDir(cardElement) {
             outputDirInput.value = data.path;
         }
     } catch (err) {
-        console.error('Browse request failed:', err);
+        logErrorDetail('browse request failed', err);
     }
 
     browseBtn.disabled = false;
@@ -1231,6 +1331,24 @@ function updateSelectedResult() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    window.addEventListener('unhandledrejection', (event) => {
+        logError('unhandledrejection:', event.reason);
+        if (event.reason instanceof Error && event.reason.stack) {
+            console.error(event.reason.stack);
+        }
+    });
+    window.addEventListener('error', (event) => {
+        logError(
+            'window error:',
+            event.message,
+            event.filename,
+            event.lineno,
+            event.colno,
+            event.error
+        );
+        if (event.error?.stack) console.error(event.error.stack);
+    });
+
     dbg('DOMContentLoaded', {
         href: location.href,
         oreillyDebug: (() => {
@@ -1255,7 +1373,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     copyCookieCmdBtn.textContent = defaultCopyLabel;
                 }, 2000);
             } catch (e) {
-                console.error('Copy failed:', e);
+                logErrorDetail('copy cookie command failed', e);
             }
         });
     }

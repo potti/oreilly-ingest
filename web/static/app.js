@@ -17,28 +17,46 @@ function getHighResCoverUrl(bookId) {
     return `https://learning.oreilly.com/covers/urn:orm:book:${bookId}/400w/`;
 }
 
-async function checkAuth() {
-    try {
-        const res = await fetch(`${API}/api/status`);
-        const data = await res.json();
-        const el = document.getElementById('auth-status');
-        const loginBtn = document.getElementById('login-btn');
-        const statusDot = el.querySelector('.status-dot');
-        const statusText = el.querySelector('.status-text');
+function reasonToLabel(reason) {
+    if (reason === 'not_authenticated') return 'Not signed in';
+    if (reason === 'subscription_expired') return 'Subscription expired';
+    return reason || 'Invalid session';
+}
 
-        if (data.valid) {
+async function checkAuth() {
+    const el = document.getElementById('auth-status');
+    const loginBtn = document.getElementById('login-btn');
+    const statusDot = el?.querySelector('.status-dot');
+    const statusText = el?.querySelector('.status-text');
+
+    function setValidUi(valid, reasonLabel) {
+        if (!el || !statusDot) return;
+        if (valid) {
             if (statusText) statusText.textContent = 'Session Valid';
             statusDot.className = 'status-dot w-2 h-2 rounded-full bg-emerald-500';
             el.className = 'flex items-center gap-2 text-sm text-emerald-600';
-            loginBtn.classList.add('hidden');
+            if (loginBtn) loginBtn.classList.add('hidden');
         } else {
-            if (statusText) statusText.textContent = data.reason || 'Invalid';
+            if (statusText) statusText.textContent = reasonLabel;
             statusDot.className = 'status-dot w-2 h-2 rounded-full bg-amber-500';
             el.className = 'flex items-center gap-2 text-sm text-amber-600';
-            loginBtn.classList.remove('hidden');
+            if (loginBtn) loginBtn.classList.remove('hidden');
+        }
+    }
+
+    try {
+        const res = await fetch(`${API}/api/status`);
+        const data = await res.json();
+        const valid = data && data.valid === true;
+        if (valid) {
+            setValidUi(true);
+        } else {
+            setValidUi(false, reasonToLabel(data?.reason));
         }
     } catch (err) {
         console.error('Auth check failed:', err);
+        setValidUi(false, 'Status check failed');
+        if (loginBtn) loginBtn.classList.remove('hidden');
     }
 }
 

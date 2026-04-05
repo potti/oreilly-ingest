@@ -275,7 +275,7 @@ export default function App() {
                         <span className="text-[1.625rem] font-bold tracking-tight text-oreilly-red">
                             O'REILLY
                         </span>
-                        <span className="text-base font-medium text-zinc-300 hidden sm:inline">Ingest</span>
+                        <span className="text-base font-medium text-zinc-300">Ingest new</span>
                     </div>
                     <div className="flex items-center gap-3 sm:gap-4 flex-wrap justify-end">
                         <div className="flex items-center gap-2 sm:gap-3">

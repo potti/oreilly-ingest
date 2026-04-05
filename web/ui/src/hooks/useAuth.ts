@@ -73,6 +73,15 @@ export function useAuth() {
                 throw parseErr;
             }
 
+            dbg('checkAuth: response', {
+                myGen,
+                genRefCurrent: genRef.current,
+                httpStatus: res.status,
+                resOk: res.ok,
+                parsed: data,
+                bodyPreview: previewText(rawText),
+            });
+
             if (myGen !== genRef.current) {
                 logApiOffPath('GET /api/status', '已有更新的 checkAuth，本次结果丢弃（stale）', {
                     myGen,

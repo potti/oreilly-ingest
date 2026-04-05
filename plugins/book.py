@@ -46,8 +46,12 @@ class BookPlugin(Plugin):
             fmt = item.get("content_format")
             if fmt is not None and fmt != "book":
                 continue
+            # O'Reilly may use archive_id and/or id for the same ISBN-style key.
+            book_id = item.get("archive_id") or item.get("id")
+            if book_id is None or book_id == "":
+                continue
             results.append({
-                "id": item.get("archive_id"),
+                "id": str(book_id),
                 "title": item.get("title"),
                 "authors": item.get("authors", []),
                 "cover_url": item.get("cover_url"),

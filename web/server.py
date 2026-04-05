@@ -3,7 +3,7 @@
 import json
 import re
 import threading
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -394,12 +394,13 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         print(f"[HTTP] {args[0]}")
 
 
-def create_server(host: str = "localhost", port: int = 8000) -> HTTPServer:
-    """Create and configure the HTTP server."""
+def create_server(host: str = "localhost", port: int = 8000) -> ThreadingHTTPServer:
+    """Create and configure the HTTP server (threaded so /api/status is not blocked by search)."""
     kernel = create_default_kernel()
     DownloaderHandler.kernel = kernel
 
-    server = HTTPServer((host, port), DownloaderHandler)
+    server = ThreadingHTTPServer((host, port), DownloaderHandler)
+    server.daemon_threads = True
     return server
 
 

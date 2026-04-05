@@ -44,6 +44,8 @@ let defaultOutputDir = '';
 const chaptersCache = {};
 /** Incremented on each checkAuth(); stale responses must not update the UI. */
 let authCheckSeq = 0;
+/** Incremented on each search(); stale responses must not clear or overwrite results. */
+let searchSeq = 0;
 
 /**
  * Get high-resolution cover URL for expanded view.
@@ -65,7 +67,8 @@ function escapeHtml(text) {
 /** Normalize one search hit so the card template always gets safe, consistent fields. */
 function normalizeSearchHit(raw) {
     if (!raw || typeof raw !== 'object') return null;
-    const id = raw.id != null ? String(raw.id) : '';
+    const idRaw = raw.id != null && raw.id !== '' ? raw.id : raw.archive_id;
+    const id = idRaw != null && idRaw !== '' ? String(idRaw) : '';
     if (!id) return null;
     let authors = raw.authors;
     if (!Array.isArray(authors)) {
@@ -90,6 +93,7 @@ function normalizeSearchHit(raw) {
 function reasonToLabel(reason) {
     if (reason === 'not_authenticated') return 'Not signed in';
     if (reason === 'subscription_expired') return 'Subscription expired';
+    if (reason === 'status_timeout') return 'Status check timed out';
     return reason || 'Invalid session';
 }
 
@@ -147,8 +151,12 @@ async function checkAuth() {
 
     setCheckingUi();
 
+    const AUTH_STATUS_TIMEOUT_MS = 45000;
+    const ac = new AbortController();
+    const timeoutId = setTimeout(() => ac.abort(), AUTH_STATUS_TIMEOUT_MS);
+
     try {
-        const res = await fetch(`${API}/api/status`);
+        const res = await fetch(`${API}/api/status`, { signal: ac.signal });
         const rawText = await res.text();
         dbg('checkAuth: response', {
             seq,
@@ -187,8 +195,15 @@ async function checkAuth() {
             dbg('checkAuth: error on stale seq, ignored', { seq, authCheckSeq, err });
             return;
         }
+        if (err && err.name === 'AbortError') {
+            logError('checkAuth: timed out after', AUTH_STATUS_TIMEOUT_MS, 'ms');
+            setValidUi(false, reasonToLabel('status_timeout'));
+            return;
+        }
         logErrorDetail('checkAuth failed', err);
         setValidUi(false, 'Status check failed');
+    } finally {
+        clearTimeout(timeoutId);
     }
 }
 
@@ -351,6 +366,7 @@ async function search(query) {
         return;
     }
 
+    const seq = ++searchSeq;
     const url = `${API}/api/search?q=${encodeURIComponent(query)}`;
     const SEARCH_TIMEOUT_MS = 120000;
     const ac = new AbortController();
@@ -398,6 +414,11 @@ async function search(query) {
             logErrorDetail('search: JSON.parse failed', parseErr);
             logError('search: raw body (first 300 chars)', rawText.slice(0, 300));
             throw parseErr;
+        }
+
+        if (seq !== searchSeq) {
+            dbgVerbose('search: stale response after parse, skip DOM', { seq, searchSeq });
+            return;
         }
 
         container.innerHTML = '';
@@ -470,17 +491,21 @@ async function search(query) {
             dbg('search: done', container.children.length, 'cards');
         }
     } catch (err) {
-        logErrorDetail('search: failed', err);
-        try {
-            if (container) {
-                container.innerHTML = `
-                    <div class="text-center py-16 text-red-600">
-                        <p>Search failed: ${escapeHtml(err?.message || String(err))}</p>
-                    </div>
-                `;
+        if (seq !== searchSeq) {
+            dbgVerbose('search: stale error ignored', { seq, searchSeq, err });
+        } else {
+            logErrorDetail('search: failed', err);
+            try {
+                if (container) {
+                    container.innerHTML = `
+                        <div class="text-center py-16 text-red-600">
+                            <p>Search failed: ${escapeHtml(err?.message || String(err))}</p>
+                        </div>
+                    `;
+                }
+            } catch (uiErr) {
+                logErrorDetail('search: could not render error UI', uiErr);
             }
-        } catch (uiErr) {
-            logErrorDetail('search: could not render error UI', uiErr);
         }
     } finally {
         clearTimeout(timeoutId);

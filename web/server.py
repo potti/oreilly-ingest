@@ -3,6 +3,7 @@
 import json
 import re
 import threading
+from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -65,6 +66,9 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             self._handle_get_cookies()
         elif path == "/api/formats":
             self._handle_formats()
+        elif path == "/api/downloads":
+            params = parse_qs(parsed.query)
+            self._handle_downloads_list(params)
         else:
             super().do_GET()
 
@@ -153,6 +157,81 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         """
         from plugins.downloader import DownloaderPlugin
         self._send_json(DownloaderPlugin.get_formats_info())
+
+    def _handle_downloads_list(self, params: dict):
+        """List completed book folders under output dir, newest first, paginated.
+
+        Query: page (1-based), page_size (default 10, max 50), output_dir (optional).
+        """
+        output_plugin = self.kernel["output"]
+
+        try:
+            page = int(params.get("page", ["1"])[0] or "1")
+        except ValueError:
+            page = 1
+        try:
+            page_size = int(params.get("page_size", ["10"])[0] or "10")
+        except ValueError:
+            page_size = 10
+
+        page = max(1, page)
+        page_size = min(50, max(1, page_size))
+
+        path_param = (params.get("output_dir") or [""])[0].strip()
+        if path_param:
+            ok, msg, root = output_plugin.validate_dir(path_param)
+            if not ok or root is None:
+                self._send_json({"error": msg or "Invalid output directory"}, 400)
+                return
+        else:
+            root = output_plugin.get_default_dir()
+
+        root = root.resolve()
+        entries: list[tuple[Path, float, str]] = []
+        if root.is_dir():
+            for child in root.iterdir():
+                if not child.is_dir() or child.name.startswith("."):
+                    continue
+                book_id = ""
+                meta = child / ".book_id"
+                if meta.is_file():
+                    try:
+                        book_id = meta.read_text(encoding="utf-8").strip()
+                    except OSError:
+                        pass
+                if not book_id and not (child / "OEBPS").is_dir():
+                    continue
+                try:
+                    mtime = child.stat().st_mtime
+                except OSError:
+                    continue
+                entries.append((child, mtime, book_id))
+
+        entries.sort(key=lambda x: -x[1])
+        total = len(entries)
+        start = (page - 1) * page_size
+        slice_ = entries[start : start + page_size]
+
+        items = []
+        for book_path, mtime, book_id in slice_:
+            items.append(
+                {
+                    "folder_name": book_path.name,
+                    "book_id": book_id,
+                    "path": str(book_path.resolve()),
+                    "modified_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                }
+            )
+
+        self._send_json(
+            {
+                "items": items,
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "output_dir": str(root),
+            }
+        )
 
     def _handle_set_output_dir(self, data: dict):
         """Handle output directory selection - browse or direct path."""

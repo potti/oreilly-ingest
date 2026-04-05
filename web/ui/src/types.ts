@@ -18,6 +18,22 @@ export type ChapterRow = {
     minutes?: number;
 };
 
+export type DownloadListItem = {
+    folder_name: string;
+    book_id: string;
+    path: string;
+    modified_at: string;
+};
+
+export type DownloadListResponse = {
+    items: DownloadListItem[];
+    page: number;
+    page_size: number;
+    total: number;
+    output_dir: string;
+    error?: string;
+};
+
 export type ProgressPayload = {
     status?: string;
     percentage?: number;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { API, COOKIE_CONSOLE_CMD, SEARCH_TIMEOUT_MS } from './constants';
 import { BookCard } from './components/BookCard';
+import { DownloadedList } from './components/DownloadedList';
 import { useAuth } from './hooks/useAuth';
 import type { BookHit } from './types';
 import { dbg, dbgVerbose, logApiOffPath, logError, logErrorDetail, normalizeSearchHit, previewText } from './utils';
@@ -446,6 +447,8 @@ export default function App() {
                         </p>
                     </section>
                 )}
+
+                <DownloadedList outputDir={defaultOutputDir} />
 
                 <section className="mb-10">
                     <div className="relative group">

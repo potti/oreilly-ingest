@@ -14,12 +14,18 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
+# Web UI (Vite + React in web/ui/; build output goes to web/static/)
+cd web/ui && npm ci && npm run build
+
 # Run the web server
 python main.py                    # Default: localhost:8000
 python main.py --port 9000        # Custom port
 
 # Run with venv directly
 .venv/bin/python main.py
+
+# UI dev against an already-running API (port 8000)
+cd web/ui && npm run dev          # Vite proxies /api → 127.0.0.1:8000
 ```
 
 ## Architecture

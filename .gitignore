@@ -25,6 +25,9 @@ build/
 .DS_Store
 Thumbs.db
 
+# Frontend
+web/ui/node_modules/
+
 # Project specific
 output/
 data/
@@ -38,3 +41,4 @@ cookies.json
 .coverage
 .pytest_cache/
 htmlcov/
+node_modules/

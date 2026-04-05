@@ -414,13 +414,38 @@ class DownloaderPlugin(Plugin):
 
         # Chunks
         if "chunks" in formats:
-            report("generating_chunks", 98)
             chunking_plugin = self.kernel["chunking"]
+            total_ch = len(chapters_data)
+
+            def on_chunk_progress(done: int, total: int, title: str):
+                if total <= 0:
+                    pct = 98
+                else:
+                    pct = min(99, 98 + int((done / total) * 1.99))
+                short = (title[:80] + "…") if len(title) > 80 else title
+                report(
+                    "generating_chunks",
+                    pct,
+                    message=f"Chunking {done}/{total}: {short}" if total else "Chunking…",
+                    current_chapter=done,
+                    total_chapters=total,
+                    chapter_title=title,
+                )
+
+            report(
+                "generating_chunks",
+                98,
+                message="Starting chunking…",
+                current_chapter=0,
+                total_chapters=total_ch,
+                chapter_title="",
+            )
             chunks_path = chunking_plugin.generate(
                 book_dir=book_dir,
                 book_metadata=book_info,
                 chapters_data=chapters_data,
                 config=chunk_config,
+                progress_callback=on_chunk_progress,
             )
             result.files["chunks"] = str(chunks_path)
 

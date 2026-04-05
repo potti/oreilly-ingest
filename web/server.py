@@ -19,7 +19,13 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
     kernel: Kernel = None
     download_progress: dict = {}
     _progress_lock = threading.Lock()
+    # Serializes "may I start?" + Thread() + start() so two concurrent POSTs cannot
+    # both pass the in-progress check.
+    _download_start_lock = threading.Lock()
+    _download_thread: threading.Thread | None = None
     _cancel_requested: bool = False
+
+    _TERMINAL_STATUSES = frozenset(("completed", "error", "cancelled"))
 
     @classmethod
     def _set_progress(cls, data: dict):
@@ -125,8 +131,11 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": str(e)}, 400)
 
     def _handle_progress(self):
+        # Never call _send_json while holding _progress_lock: a slow client would block
+        # the whole server and stall background progress_callback -> _set_progress.
         with self._progress_lock:
-            self._send_json(dict(self.download_progress))
+            payload = dict(self.download_progress)
+        self._send_json(payload)
 
     def _handle_get_settings(self):
         """Return current settings."""
@@ -241,11 +250,12 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         """Request cancellation of the current download."""
         with self._progress_lock:
             status = self.download_progress.get("status")
-            if status and status not in ("completed", "error", "cancelled"):
+            if status and status not in DownloaderHandler._TERMINAL_STATUSES:
                 DownloaderHandler._cancel_requested = True
-                self._send_json({"success": True, "message": "Cancel requested"})
+                payload = ({"success": True, "message": "Cancel requested"}, 200)
             else:
-                self._send_json({"success": False, "message": "No active download"})
+                payload = ({"success": False, "message": "No active download"}, 200)
+        self._send_json(payload[0], payload[1])
 
     def _handle_reveal(self, data: dict):
         """Open file manager and select the specified file."""
@@ -303,27 +313,46 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         else:
             output_dir = output_plugin.get_default_dir()
 
-        # Check if already downloading
-        with self._progress_lock:
-            status = self.download_progress.get("status")
-            if status and status not in ("completed", "error", "cancelled"):
-                self._send_json({"error": "Download already in progress"}, 409)
-                return
-
         # Parse formats using plugin (single source of truth)
         from plugins.downloader import DownloaderPlugin
         formats = DownloaderPlugin.parse_formats(output_format)
         print(f"[DEBUG] Parsed formats: {formats}")
 
-        # Start download in background thread
-        thread = threading.Thread(
-            target=self._download_book_async,
-            args=(book_id, output_dir, formats, selected_chapters, skip_images, chunk_config),
-            daemon=True,
-        )
-        thread.start()
+        start_response: tuple[dict, int] | None = None
+        with DownloaderHandler._download_start_lock:
+            with self._progress_lock:
+                thr = DownloaderHandler._download_thread
+                status = self.download_progress.get("status")
+                active = bool(status and status not in DownloaderHandler._TERMINAL_STATUSES)
 
-        # Return immediately
+                if thr is not None and thr.is_alive():
+                    start_response = ({"error": "Download already in progress"}, 409)
+                elif active:
+                    # Progress still says "running" but worker is gone — e.g. crashed thread.
+                    self.download_progress = {}
+                    DownloaderHandler._download_thread = None
+
+            if start_response is None:
+                worker = threading.Thread(
+                    target=self._download_book_async,
+                    args=(
+                        book_id,
+                        output_dir,
+                        formats,
+                        selected_chapters,
+                        skip_images,
+                        chunk_config,
+                    ),
+                    daemon=True,
+                )
+                with self._progress_lock:
+                    DownloaderHandler._download_thread = worker
+                worker.start()
+
+        if start_response is not None:
+            self._send_json(start_response[0], start_response[1])
+            return
+
         self._send_json({"status": "started", "book_id": book_id})
 
     def _download_book_async(

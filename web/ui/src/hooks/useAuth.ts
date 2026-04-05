@@ -7,6 +7,9 @@ import type { AuthStatus } from '../types';
 const AUTH_ABORT_REPLACED = 'auth_replaced';
 const AUTH_ABORT_STATUS_TIMEOUT = 'auth_status_timeout';
 
+/** 与 readResponseTextWithTimeout 抛错文案一致，用于判断是否走 XHR 回退 */
+const FETCH_BODY_TIMEOUT_MARKER = 'response.text() 超过';
+
 async function readResponseTextWithTimeout(res: Response, ms: number): Promise<string> {
     let timeoutId: number | undefined;
     try {
@@ -25,6 +28,45 @@ async function readResponseTextWithTimeout(res: Response, ms: number): Promise<s
     } finally {
         if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     }
+}
+
+/** 部分安全扩展会拖死 fetch 的 response.text()，XHR 有时不受影响 */
+function getTextViaXhr(url: string, signal: AbortSignal, timeoutMs: number): Promise<{
+    status: number;
+    statusText: string;
+    body: string;
+}> {
+    return new Promise((resolve, reject) => {
+        if (signal.aborted) {
+            reject(new DOMException('Aborted', 'AbortError'));
+            return;
+        }
+        const xhr = new XMLHttpRequest();
+        const onAbort = () => {
+            xhr.abort();
+            reject(new DOMException('Aborted', 'AbortError'));
+        };
+        signal.addEventListener('abort', onAbort);
+        xhr.open('GET', url);
+        xhr.timeout = timeoutMs;
+        xhr.onload = () => {
+            signal.removeEventListener('abort', onAbort);
+            resolve({
+                status: xhr.status,
+                statusText: xhr.statusText || '',
+                body: xhr.responseText ?? '',
+            });
+        };
+        xhr.onerror = () => {
+            signal.removeEventListener('abort', onAbort);
+            reject(new Error('XMLHttpRequest 网络错误'));
+        };
+        xhr.ontimeout = () => {
+            signal.removeEventListener('abort', onAbort);
+            reject(new Error(`XMLHttpRequest 读 body 超过 ${timeoutMs}ms`));
+        };
+        xhr.send();
+    });
 }
 
 type AuthUi = {
@@ -69,8 +111,9 @@ export function useAuth() {
         }, AUTH_STATUS_TIMEOUT_MS);
 
         try {
-            dbg('checkAuth: start', { myGen, url: `${API}/api/status` });
-            const res = await fetch(`${API}/api/status`, { signal: ac.signal });
+            const statusUrl = `${API}/api/status`;
+            dbg('checkAuth: start', { myGen, url: statusUrl });
+            const res = await fetch(statusUrl, { signal: ac.signal });
             dbg('checkAuth: fetch resolved', {
                 myGen,
                 status: res.status,
@@ -82,17 +125,41 @@ export function useAuth() {
                 bodyReadTimeoutMs: AUTH_STATUS_BODY_READ_MS,
                 note: '若本行之后一直没有 body received，说明卡在 res.text()，多为浏览器扩展拖住 body',
             });
-            const rawText = await readResponseTextWithTimeout(res, AUTH_STATUS_BODY_READ_MS);
+            let rawText: string;
+            let httpStatus: number;
+            let resOk: boolean;
+            let httpStatusText: string;
+            try {
+                rawText = await readResponseTextWithTimeout(res, AUTH_STATUS_BODY_READ_MS);
+                httpStatus = res.status;
+                resOk = res.ok;
+                httpStatusText = res.statusText;
+            } catch (bodyErr) {
+                const retry =
+                    bodyErr instanceof Error &&
+                    bodyErr.message.includes(FETCH_BODY_TIMEOUT_MARKER) &&
+                    myGen === genRef.current;
+                if (!retry) throw bodyErr;
+                dbg('checkAuth: fetch 读 body 超时，改用 XMLHttpRequest 重试', {
+                    myGen,
+                    note: '部分扩展只劫持 fetch().text()，XHR 仍可能拿到正文',
+                });
+                const xhr = await getTextViaXhr(statusUrl, ac.signal, AUTH_STATUS_BODY_READ_MS);
+                rawText = xhr.body;
+                httpStatus = xhr.status;
+                resOk = xhr.status >= 200 && xhr.status < 300;
+                httpStatusText = xhr.statusText;
+            }
             dbg('checkAuth: body received', {
                 myGen,
                 length: rawText.length,
                 preview: previewText(rawText, 160),
                 note: '若有 fetch resolved 无本行，说明卡在读取 body；若有本行无 response，多为 JSON.parse 失败',
             });
-            if (!res.ok) {
+            if (!resOk) {
                 logApiOffPath('GET /api/status', 'HTTP 状态不是 2xx，不当作会话有效', {
-                    status: res.status,
-                    statusText: res.statusText,
+                    status: httpStatus,
+                    statusText: httpStatusText,
                     bodyPreview: previewText(rawText),
                 });
             }
@@ -118,8 +185,8 @@ export function useAuth() {
             dbg('checkAuth: response', {
                 myGen,
                 genRefCurrent: genRef.current,
-                httpStatus: res.status,
-                resOk: res.ok,
+                httpStatus,
+                resOk,
                 parsed: data,
                 bodyPreview: previewText(rawText),
             });
@@ -140,17 +207,17 @@ export function useAuth() {
                 !!data && (data.valid === true || v === 'true' || v === 1);
 
             if (valid) {
-                if (!res.ok) {
+                if (!resOk) {
                     logApiOffPath('GET /api/status', 'JSON 里 valid=true 但 HTTP 仍非 2xx，仍以 valid 展示', {
-                        status: res.status,
+                        status: httpStatus,
                         bodyPreview: previewText(rawText),
                     });
                 }
                 setAuth({ phase: 'ready', valid: true, label: 'Session Valid' });
             } else {
                 logApiOffPath('GET /api/status', '未判定为已登录（valid 不为 true）', {
-                    resOk: res.ok,
-                    status: res.status,
+                    resOk,
+                    status: httpStatus,
                     validField: data.valid,
                     validCoerced: v,
                     reason: data.reason,

@@ -220,24 +220,29 @@ export default function App() {
                 body: JSON.stringify(cookies),
             });
             const rawText = await res.text();
-            let data: { error?: string; success?: boolean; count?: number } = {};
+            const trimmedBody = rawText.replace(/^\uFEFF/, '').trim();
+            let data: { error?: unknown; success?: boolean; count?: number } = {};
             try {
-                data = rawText ? JSON.parse(rawText) : {};
+                data = trimmedBody ? (JSON.parse(trimmedBody) as typeof data) : {};
             } catch {
                 setCookieError('Server returned non-JSON response');
                 return;
             }
+            const errMsg =
+                typeof data.error === 'string' && data.error.trim() !== ''
+                    ? data.error.trim()
+                    : undefined;
             if (!res.ok) {
-                setCookieError(data?.error || `HTTP ${res.status}`);
+                setCookieError(errMsg ?? `HTTP ${res.status}`);
                 return;
             }
-            if (data.error != null && data.error !== '') {
-                setCookieError(String(data.error));
+            if (errMsg) {
+                setCookieError(errMsg);
                 return;
             }
             setCookieModalOpen(false);
             setCookieInput('');
-            await checkAuth();
+            void checkAuth();
         } catch (err) {
             logErrorDetail('saveCookies failed', err);
             setCookieError('Failed to save cookies');
@@ -514,7 +519,10 @@ export default function App() {
                             <button
                                 type="button"
                                 className="px-5 py-2.5 bg-oreilly-blue hover:bg-oreilly-blue-dark text-white rounded-lg font-medium transition-colors duration-150"
-                                onClick={() => void saveCookies()}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    void saveCookies();
+                                }}
                             >
                                 Save Cookies
                             </button>

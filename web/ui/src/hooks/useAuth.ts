@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { API, AUTH_STATUS_TIMEOUT_MS } from '../constants';
 import { dbg, logError, logErrorDetail, reasonToLabel } from '../utils';
 import type { AuthStatus } from '../types';
@@ -9,23 +9,39 @@ type AuthUi = {
     label: string;
 };
 
-let authCheckSeq = 0;
-
+/**
+ * Session check with per-hook generation + abort.
+ * Avoids module-level seq (StrictMode double-mount / HMR) leaving the UI stuck on "Checking...".
+ */
 export function useAuth() {
     const [auth, setAuth] = useState<AuthUi>({
         phase: 'checking',
         valid: false,
         label: 'Checking...',
     });
+    const genRef = useRef(0);
+    const abortRef = useRef<AbortController | null>(null);
+    const timeoutRef = useRef<number | null>(null);
+
     const checkAuth = useCallback(async () => {
-        const seq = ++authCheckSeq;
-        setAuth((a) => ({ ...a, phase: 'checking', label: 'Checking...' }));
+        abortRef.current?.abort();
+        if (timeoutRef.current != null) {
+            window.clearTimeout(timeoutRef.current);
+            timeoutRef.current = null;
+        }
 
         const ac = new AbortController();
-        const timeoutId = window.setTimeout(() => ac.abort(), AUTH_STATUS_TIMEOUT_MS);
+        abortRef.current = ac;
+        const myGen = ++genRef.current;
+
+        setAuth({ phase: 'checking', valid: false, label: 'Checking...' });
+
+        timeoutRef.current = window.setTimeout(() => {
+            ac.abort();
+        }, AUTH_STATUS_TIMEOUT_MS);
 
         try {
-            dbg('checkAuth: start', { seq, url: `${API}/api/status` });
+            dbg('checkAuth: start', { myGen, url: `${API}/api/status` });
             const res = await fetch(`${API}/api/status`, { signal: ac.signal });
             const rawText = await res.text();
             let data: AuthStatus = {};
@@ -36,8 +52,8 @@ export function useAuth() {
                 throw parseErr;
             }
 
-            if (seq !== authCheckSeq) {
-                dbg('checkAuth: stale ignored', { seq, authCheckSeq });
+            if (myGen !== genRef.current) {
+                dbg('checkAuth: stale response ignored', { myGen, current: genRef.current });
                 return;
             }
 
@@ -55,9 +71,9 @@ export function useAuth() {
                 });
             }
         } catch (err) {
-            if (seq !== authCheckSeq) return;
+            if (myGen !== genRef.current) return;
             if (err instanceof Error && err.name === 'AbortError') {
-                logError('checkAuth: timed out after', AUTH_STATUS_TIMEOUT_MS, 'ms');
+                logError('checkAuth: aborted or timed out', AUTH_STATUS_TIMEOUT_MS, 'ms');
                 setAuth({
                     phase: 'ready',
                     valid: false,
@@ -68,12 +84,23 @@ export function useAuth() {
                 setAuth({ phase: 'ready', valid: false, label: 'Status check failed' });
             }
         } finally {
-            window.clearTimeout(timeoutId);
+            if (timeoutRef.current != null) {
+                window.clearTimeout(timeoutRef.current);
+                timeoutRef.current = null;
+            }
         }
     }, []);
 
     useEffect(() => {
         void checkAuth();
+        return () => {
+            genRef.current += 1;
+            abortRef.current?.abort();
+            if (timeoutRef.current != null) {
+                window.clearTimeout(timeoutRef.current);
+                timeoutRef.current = null;
+            }
+        };
     }, [checkAuth]);
 
     return { auth, checkAuth };

@@ -4,6 +4,9 @@
  */
 
 const API = '';
+/** Paste in DevTools on learning.oreilly.com (Console) after signing in. */
+const COOKIE_CONSOLE_CMD =
+    "JSON.stringify(document.cookie.split(';').map(c=>c.split('=')).reduce((r,[k,v])=>({...r,[k.trim()]:v?.trim()}),{}))";
 let currentExpandedCard = null;
 let selectedResultIndex = -1;
 let defaultOutputDir = '';
@@ -29,7 +32,12 @@ async function checkAuth() {
     const statusDot = el?.querySelector('.status-dot');
     const statusText = el?.querySelector('.status-text');
 
+    const cookieHelp = document.getElementById('cookie-help-section');
+
     function setValidUi(valid, reasonLabel) {
+        if (cookieHelp) {
+            cookieHelp.classList.toggle('hidden', !!valid);
+        }
         if (!el || !statusDot) return;
         if (valid) {
             if (statusText) statusText.textContent = 'Session Valid';
@@ -999,6 +1007,24 @@ function updateSelectedResult() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    const cookieSnippet = document.getElementById('cookie-cmd-snippet');
+    if (cookieSnippet) cookieSnippet.textContent = COOKIE_CONSOLE_CMD;
+    const copyCookieCmdBtn = document.getElementById('copy-cookie-cmd-btn');
+    if (copyCookieCmdBtn) {
+        const defaultCopyLabel = copyCookieCmdBtn.textContent;
+        copyCookieCmdBtn.addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(COOKIE_CONSOLE_CMD);
+                copyCookieCmdBtn.textContent = 'Copied';
+                setTimeout(() => {
+                    copyCookieCmdBtn.textContent = defaultCopyLabel;
+                }, 2000);
+            } catch (e) {
+                console.error('Copy failed:', e);
+            }
+        });
+    }
+
     // Auth
     checkAuth();
     loadDefaultOutputDir();

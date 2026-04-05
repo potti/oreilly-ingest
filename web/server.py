@@ -55,25 +55,28 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             self._handle_progress()
         elif path == "/api/settings":
             self._handle_get_settings()
+        elif path == "/api/cookies":
+            self._handle_get_cookies()
         elif path == "/api/formats":
             self._handle_formats()
         else:
             super().do_GET()
 
     def do_POST(self):
+        post_path = urlparse(self.path).path
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length).decode("utf-8")
         data = json.loads(body) if body else {}
 
-        if self.path == "/api/download":
+        if post_path == "/api/download":
             self._handle_download(data)
-        elif self.path == "/api/cookies":
+        elif post_path in ("/api/cookies", "/api/settings/cookies"):
             self._handle_cookies(data)
-        elif self.path == "/api/cancel":
+        elif post_path == "/api/cancel":
             self._handle_cancel()
-        elif self.path == "/api/reveal":
+        elif post_path == "/api/reveal":
             self._handle_reveal(data)
-        elif self.path == "/api/settings/output-dir":
+        elif post_path == "/api/settings/output-dir":
             self._handle_set_output_dir(data)
         else:
             self._send_json({"error": "Not found"}, 404)
@@ -170,16 +173,67 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
 
         self._send_json({"success": True, "path": str(path)})
 
-    def _handle_cookies(self, data: dict):
-        """Save cookies from user input."""
+    @staticmethod
+    def _normalize_cookie_body(data: dict) -> dict | None:
+        """Accept flat {name: value} or wrapped {"cookies": {name: value}}."""
         if not isinstance(data, dict) or not data:
+            return None
+        if set(data.keys()) == {"cookies"}:
+            inner = data["cookies"]
+            if isinstance(inner, dict) and inner:
+                return inner
+            return None
+        return data
+
+    def _handle_get_cookies(self):
+        """Return whether cookies are configured (names only, never values)."""
+        cookie_path = str(config.COOKIES_FILE.resolve())
+        if not config.COOKIES_FILE.exists():
+            self._send_json(
+                {
+                    "configured": False,
+                    "path": cookie_path,
+                    "cookie_names": [],
+                    "count": 0,
+                }
+            )
+            return
+        try:
+            raw = json.loads(config.COOKIES_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            self._send_json({"error": str(e), "configured": False}, 400)
+            return
+        if not isinstance(raw, dict):
+            self._send_json(
+                {"error": "Cookie file must be a JSON object", "configured": False},
+                400,
+            )
+            return
+        names = sorted(raw.keys())
+        self._send_json(
+            {
+                "configured": bool(names),
+                "path": cookie_path,
+                "cookie_names": names,
+                "count": len(names),
+            }
+        )
+
+    def _handle_cookies(self, data: dict):
+        """Persist session cookies and reload the HTTP client."""
+        cookies = self._normalize_cookie_body(data)
+        if cookies is None:
             self._send_json({"error": "Invalid cookie data"}, 400)
             return
 
         try:
-            config.COOKIES_FILE.write_text(json.dumps(data, indent=2))
+            config.COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            config.COOKIES_FILE.write_text(
+                json.dumps(cookies, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
             self.kernel.http.reload_cookies()
-            self._send_json({"success": True})
+            self._send_json({"success": True, "count": len(cookies)})
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
 

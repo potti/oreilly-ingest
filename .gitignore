@@ -42,3 +42,4 @@ cookies.json
 .pytest_cache/
 htmlcov/
 node_modules/
+assets/

@@ -3,16 +3,35 @@ import { API, COOKIE_CONSOLE_CMD, SEARCH_TIMEOUT_MS } from './constants';
 import { BookCard } from './components/BookCard';
 import { useAuth } from './hooks/useAuth';
 import type { BookHit } from './types';
-import { dbg, dbgVerbose, logError, logErrorDetail, normalizeSearchHit } from './utils';
+import { dbg, dbgVerbose, logApiOffPath, logError, logErrorDetail, normalizeSearchHit, previewText } from './utils';
 
 async function loadDefaultOutputDir(): Promise<string> {
     try {
         const res = await fetch(`${API}/api/settings`);
         const raw = await res.text();
-        const data = raw ? (JSON.parse(raw) as { output_dir?: string }) : {};
-        if (!res.ok) return '';
+        let data: { output_dir?: string } = {};
+        try {
+            data = raw ? (JSON.parse(raw) as { output_dir?: string }) : {};
+        } catch (parseErr) {
+            logApiOffPath('GET /api/settings', '响应不是合法 JSON，无法读取 output_dir', {
+                status: res.status,
+                bodyPreview: previewText(raw),
+                parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+            });
+            return '';
+        }
+        if (!res.ok) {
+            logApiOffPath('GET /api/settings', 'HTTP 非 2xx，不使用默认输出目录', {
+                status: res.status,
+                bodyPreview: previewText(raw),
+            });
+            return '';
+        }
         return data.output_dir ?? '';
     } catch (err) {
+        logApiOffPath('GET /api/settings', '请求失败（网络等）', {
+            err: err instanceof Error ? err.message : String(err),
+        });
         logErrorDetail('loadDefaultOutputDir failed', err);
         return '';
     }
@@ -128,17 +147,36 @@ export default function App() {
             try {
                 data = rawText ? JSON.parse(rawText) : {};
             } catch (parseErr) {
+                logApiOffPath('GET /api/search', '响应体不是合法 JSON', {
+                    seq,
+                    q,
+                    status: res.status,
+                    bodyPreview: previewText(rawText),
+                    parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+                });
                 logErrorDetail('search: JSON.parse failed', parseErr);
                 throw parseErr;
             }
 
             if (seq !== searchSeqRef.current) {
+                logApiOffPath('GET /api/search', '已有更新的搜索请求，本次结果丢弃（stale）', {
+                    seq,
+                    currentSeq: searchSeqRef.current,
+                    q,
+                    resOk: res.ok,
+                });
                 dbgVerbose('search: stale after parse', { seq });
                 return;
             }
 
             if (!res.ok) {
                 const msg = data?.error || `Search failed (HTTP ${res.status})`;
+                logApiOffPath('GET /api/search', 'HTTP 非 2xx，展示错误文案', {
+                    status: res.status,
+                    q,
+                    serverError: data?.error,
+                    bodyPreview: previewText(rawText),
+                });
                 setResults([]);
                 setSearchMessage({ type: 'error', text: msg });
                 return;
@@ -146,15 +184,31 @@ export default function App() {
 
             let list = data.results;
             if (!Array.isArray(list)) {
+                logApiOffPath('GET /api/search', 'JSON 里 results 不是数组，按空列表处理', {
+                    q,
+                    resultsType: list === undefined ? 'undefined' : typeof list,
+                    bodyPreview: previewText(rawText),
+                });
                 logError('search: data.results is not an array');
                 list = [];
             }
 
             const books: BookHit[] = [];
+            let badHits = 0;
             for (const raw of list) {
                 const b = normalizeSearchHit(raw);
                 if (b) books.push(b);
-                else logError('search: normalizeSearchHit returned null', { raw });
+                else {
+                    badHits += 1;
+                    logError('search: normalizeSearchHit returned null', { raw });
+                }
+            }
+            if (badHits > 0) {
+                logApiOffPath('GET /api/search', '部分结果项无法规范化（缺 id 等），已跳过', {
+                    q,
+                    badHits,
+                    totalFromApi: list.length,
+                });
             }
 
             if (books.length === 0) {
@@ -170,7 +224,19 @@ export default function App() {
             setSelectedIdx(-1);
             setExpandedId(null);
         } catch (err) {
-            if (seq !== searchSeqRef.current) return;
+            if (seq !== searchSeqRef.current) {
+                logApiOffPath('GET /api/search', '出错时已有更新的搜索请求，忽略本次错误（stale）', {
+                    seq,
+                    currentSeq: searchSeqRef.current,
+                    q,
+                    err: err instanceof Error ? err.message : String(err),
+                });
+                return;
+            }
+            logApiOffPath('GET /api/search', '请求或解析过程异常', {
+                q,
+                err: err instanceof Error ? err.name + ': ' + err.message : String(err),
+            });
             logErrorDetail('search: failed', err);
             setResults([]);
             setSearchMessage({
@@ -224,7 +290,12 @@ export default function App() {
             let data: { error?: unknown; success?: boolean; count?: number } = {};
             try {
                 data = trimmedBody ? (JSON.parse(trimmedBody) as typeof data) : {};
-            } catch {
+            } catch (parseErr) {
+                logApiOffPath('POST /api/cookies', '响应体不是合法 JSON', {
+                    status: res.status,
+                    bodyPreview: previewText(trimmedBody),
+                    parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+                });
                 setCookieError('Server returned non-JSON response');
                 return;
             }
@@ -233,10 +304,19 @@ export default function App() {
                     ? data.error.trim()
                     : undefined;
             if (!res.ok) {
+                logApiOffPath('POST /api/cookies', 'HTTP 非 2xx，不关闭弹窗', {
+                    status: res.status,
+                    errMsg,
+                    bodyPreview: previewText(trimmedBody),
+                });
                 setCookieError(errMsg ?? `HTTP ${res.status}`);
                 return;
             }
             if (errMsg) {
+                logApiOffPath('POST /api/cookies', 'JSON 含 error 字段，不关闭弹窗', {
+                    errMsg,
+                    bodyPreview: previewText(trimmedBody),
+                });
                 setCookieError(errMsg);
                 return;
             }
@@ -244,6 +324,9 @@ export default function App() {
             setCookieInput('');
             void checkAuth();
         } catch (err) {
+            logApiOffPath('POST /api/cookies', 'fetch 或读 body 异常', {
+                err: err instanceof Error ? err.name + ': ' + err.message : String(err),
+            });
             logErrorDetail('saveCookies failed', err);
             setCookieError('Failed to save cookies');
         }

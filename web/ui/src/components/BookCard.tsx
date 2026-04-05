@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useRef, useState } from 'react';
 import { API, BOOK_ONLY_FORMATS } from '../constants';
 import { chaptersCache } from '../chaptersCache';
 import type { BookHit, ChapterRow, ProgressPayload } from '../types';
-import { escapeHtml, formatETA, getHighResCoverUrl, logErrorDetail } from '../utils';
+import { escapeHtml, formatETA, getHighResCoverUrl, logApiOffPath, logErrorDetail, previewText } from '../utils';
 
 type Props = {
     book: BookHit;
@@ -19,9 +19,38 @@ async function revealFile(path: string) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ path }),
         });
-        const data = (await res.json()) as { error?: string };
-        if (data.error) console.error('[oreilly-ingest] reveal failed:', data.error);
+        const raw = await res.text();
+        let data: { error?: string } = {};
+        try {
+            data = raw ? (JSON.parse(raw) as { error?: string }) : {};
+        } catch (parseErr) {
+            logApiOffPath('POST /api/reveal', '响应不是合法 JSON', {
+                status: res.status,
+                pathPreview: previewText(path, 120),
+                bodyPreview: previewText(raw),
+                parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+            });
+            return;
+        }
+        if (!res.ok) {
+            logApiOffPath('POST /api/reveal', 'HTTP 非 2xx', {
+                status: res.status,
+                pathPreview: previewText(path, 120),
+                serverError: data.error,
+                bodyPreview: previewText(raw),
+            });
+        }
+        if (data.error) {
+            logApiOffPath('POST /api/reveal', '服务端返回 error，未在 Finder 中展示成功', {
+                error: data.error,
+                pathPreview: previewText(path, 120),
+            });
+            console.error('[oreilly-ingest] reveal failed:', data.error);
+        }
     } catch (err) {
+        logApiOffPath('POST /api/reveal', 'fetch 或读 body 失败', {
+            err: err instanceof Error ? err.name + ': ' + err.message : String(err),
+        });
         logErrorDetail('reveal request failed', err);
     }
 }
@@ -79,16 +108,37 @@ export const BookCard = forwardRef<HTMLElement, Props>(function BookCard(
         (async () => {
             try {
                 const res = await fetch(`${API}/api/book/${encodeURIComponent(book.id)}`);
-                const b = (await res.json()) as {
+                const raw = await res.text();
+                let b: {
                     publishers?: string[];
                     virtual_pages?: number;
                     description?: string;
-                };
+                } = {};
+                try {
+                    b = raw ? (JSON.parse(raw) as typeof b) : {};
+                } catch (parseErr) {
+                    logApiOffPath(`GET /api/book/${book.id}`, '详情响应不是合法 JSON', {
+                        status: res.status,
+                        bodyPreview: previewText(raw),
+                        parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+                    });
+                    if (!cancelled) setDescriptionHtml('Failed to load details.');
+                    return;
+                }
+                if (!res.ok) {
+                    logApiOffPath(`GET /api/book/${book.id}`, 'HTTP 非 2xx，仍尝试用已解析字段展示', {
+                        status: res.status,
+                        bodyPreview: previewText(raw),
+                    });
+                }
                 if (cancelled) return;
                 setPublisher(b.publishers?.join(', ') || 'Unknown');
                 setPages(b.virtual_pages != null ? String(b.virtual_pages) : 'N/A');
                 setDescriptionHtml(b.description || 'No description available.');
             } catch (err) {
+                logApiOffPath(`GET /api/book/${book.id}`, '请求或读 body 异常', {
+                    err: err instanceof Error ? err.name + ': ' + err.message : String(err),
+                });
                 logErrorDetail(`expandBook fetch details failed (bookId=${book.id})`, err);
                 if (!cancelled) setDescriptionHtml('Failed to load details.');
             } finally {
@@ -114,8 +164,31 @@ export const BookCard = forwardRef<HTMLElement, Props>(function BookCard(
         setChaptersLoading(true);
         try {
             const res = await fetch(`${API}/api/book/${encodeURIComponent(book.id)}/chapters`);
-            const data = (await res.json()) as { chapters?: ChapterRow[] };
+            const raw = await res.text();
+            let data: { chapters?: ChapterRow[] } = {};
+            try {
+                data = raw ? (JSON.parse(raw) as { chapters?: ChapterRow[] }) : {};
+            } catch (parseErr) {
+                logApiOffPath(`GET /api/book/.../chapters (${book.id})`, '章节列表响应不是合法 JSON', {
+                    status: res.status,
+                    bodyPreview: previewText(raw),
+                    parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+                });
+                setChapters([]);
+                return;
+            }
+            if (!res.ok) {
+                logApiOffPath(`GET /api/book/.../chapters (${book.id})`, 'HTTP 非 2xx，章节列表可能为空', {
+                    status: res.status,
+                    bodyPreview: previewText(raw),
+                });
+            }
             const list = data.chapters ?? [];
+            if (!Array.isArray(data.chapters) && raw.trim() !== '' && res.ok) {
+                logApiOffPath(`GET /api/book/.../chapters (${book.id})`, 'JSON 中 chapters 缺失或非数组，使用空列表', {
+                    chaptersType: data.chapters === undefined ? 'undefined' : typeof data.chapters,
+                });
+            }
             chaptersCache[book.id] = list;
             setChapters(list);
             const chk: Record<number, boolean> = {};
@@ -124,6 +197,9 @@ export const BookCard = forwardRef<HTMLElement, Props>(function BookCard(
             });
             setChapterChecked(chk);
         } catch (err) {
+            logApiOffPath(`GET /api/book/.../chapters (${book.id})`, '请求或读 body 异常', {
+                err: err instanceof Error ? err.name + ': ' + err.message : String(err),
+            });
             logErrorDetail(`loadChaptersIfNeeded failed (bookId=${book.id})`, err);
             setChapters([]);
         } finally {

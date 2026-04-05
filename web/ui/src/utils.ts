@@ -84,3 +84,20 @@ export function logErrorDetail(context: string, err: unknown) {
         console.error((err as Error).stack);
     }
 }
+
+/** Shorten long strings for console (e.g. response bodies). */
+export function previewText(s: string, max = 240): string {
+    const t = s.replace(/\s+/g, ' ').trim();
+    return t.length <= max ? t : `${t.slice(0, max)}…`;
+}
+
+/**
+ * 请求已返回（或失败）后，未走「成功主路径」时打印原因与关键参数（调试）。
+ */
+export function logApiOffPath(endpoint: string, whyZh: string, details?: Record<string, unknown>): void {
+    if (details && Object.keys(details).length > 0) {
+        console.warn(`[API 非主路径] ${endpoint} — ${whyZh}`, details);
+    } else {
+        console.warn(`[API 非主路径] ${endpoint} — ${whyZh}`);
+    }
+}

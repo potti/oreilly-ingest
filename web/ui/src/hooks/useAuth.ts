@@ -3,6 +3,10 @@ import { API, AUTH_STATUS_TIMEOUT_MS } from '../constants';
 import { dbg, dbgVerbose, logApiOffPath, logError, logErrorDetail, previewText, reasonToLabel } from '../utils';
 import type { AuthStatus } from '../types';
 
+/** Passed to AbortController.abort(reason)，便于区分「被新一轮 checkAuth 顶替」和「定时超时」 */
+const AUTH_ABORT_REPLACED = 'auth_replaced';
+const AUTH_ABORT_STATUS_TIMEOUT = 'auth_status_timeout';
+
 type AuthUi = {
     phase: 'checking' | 'ready';
     valid: boolean;
@@ -24,7 +28,11 @@ export function useAuth() {
     const timeoutRef = useRef<number | null>(null);
 
     const checkAuth = useCallback(async () => {
-        abortRef.current?.abort();
+        try {
+            abortRef.current?.abort(AUTH_ABORT_REPLACED);
+        } catch {
+            /* ignore */
+        }
         if (timeoutRef.current != null) {
             window.clearTimeout(timeoutRef.current);
             timeoutRef.current = null;
@@ -37,7 +45,7 @@ export function useAuth() {
         setAuth({ phase: 'checking', valid: false, label: 'Checking...' });
 
         timeoutRef.current = window.setTimeout(() => {
-            ac.abort();
+            ac.abort(AUTH_ABORT_STATUS_TIMEOUT);
         }, AUTH_STATUS_TIMEOUT_MS);
 
         try {
@@ -105,18 +113,35 @@ export function useAuth() {
             }
         } catch (err) {
             if (myGen !== genRef.current) {
+                const abortReason =
+                    typeof ac.signal.reason === 'string' ? ac.signal.reason : String(ac.signal.reason ?? '');
                 logApiOffPath('GET /api/status', '出错时已有更新的 checkAuth，忽略本次错误（stale catch）', {
                     myGen,
                     genRefCurrent: genRef.current,
+                    abortReason: abortReason || undefined,
                     err: err instanceof Error ? err.name + ': ' + err.message : String(err),
                 });
                 return;
             }
             if (err instanceof Error && err.name === 'AbortError') {
-                logApiOffPath('GET /api/status', '请求被中止或超时，不更新为已登录', {
-                    timeoutMs: AUTH_STATUS_TIMEOUT_MS,
-                    myGen,
-                });
+                const reason = ac.signal.reason;
+                if (reason === AUTH_ABORT_STATUS_TIMEOUT) {
+                    logApiOffPath('GET /api/status', `在 ${AUTH_STATUS_TIMEOUT_MS}ms 内未收到完整响应，判定为状态检查超时`, {
+                        timeoutMs: AUTH_STATUS_TIMEOUT_MS,
+                        myGen,
+                        hint: '请确认服务端 /api/status 可访问、未被长时间阻塞，或适当增大 AUTH_STATUS_TIMEOUT_MS',
+                    });
+                } else {
+                    logApiOffPath('GET /api/status', '请求被 AbortSignal 中止（非定时器超时），不更新为已登录', {
+                        timeoutMs: AUTH_STATUS_TIMEOUT_MS,
+                        myGen,
+                        abortReason: reason,
+                        hint:
+                            reason === AUTH_ABORT_REPLACED
+                                ? '若紧接着有新的 checkAuth，多为上一轮被顶替；否则为浏览器或扩展中止了请求'
+                                : '可能是网络中断、页面隐藏策略或浏览器未把 abort(reason) 传入 signal.reason',
+                    });
+                }
                 logError('checkAuth: aborted or timed out', AUTH_STATUS_TIMEOUT_MS, 'ms');
                 setAuth({
                     phase: 'ready',
@@ -144,7 +169,11 @@ export function useAuth() {
         return () => {
             genRef.current += 1;
             dbgVerbose('useAuth cleanup: genRef bumped', genRef.current);
-            abortRef.current?.abort();
+            try {
+                abortRef.current?.abort(AUTH_ABORT_REPLACED);
+            } catch {
+                /* ignore */
+            }
             if (timeoutRef.current != null) {
                 window.clearTimeout(timeoutRef.current);
                 timeoutRef.current = null;

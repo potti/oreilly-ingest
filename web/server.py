@@ -384,11 +384,16 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         )
 
     def _send_json(self, data: dict, status: int = 200):
+        # 必须带 Content-Length：HTTP/1.1 keep-alive 下否则浏览器无法判定 body 结束，
+        # 会出现 DevTools Preview 空、fetch().text() 一直挂起等问题。
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
+        self.wfile.write(body)
+        self.wfile.flush()
 
     def log_message(self, format, *args):
         print(f"[HTTP] {args[0]}")

@@ -14,7 +14,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Web UI (Vite + React in web/ui/; build output goes to web/static/)
+# Web UI (Vite + React in web/ui/; build output goes to web/static/, not committed)
 cd web/ui && npm ci && npm run build
 
 # Run the web server

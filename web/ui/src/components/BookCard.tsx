@@ -218,7 +218,25 @@ export const BookCard = forwardRef<HTMLElement, Props>(function BookCard(
             while (!pollCancel.current) {
                 try {
                     const res = await fetch(`${API}/api/progress`);
-                    const data = (await res.json()) as ProgressPayload;
+                    const raw = await res.text();
+                    if (!res.ok) {
+                        logApiOffPath('GET /api/progress', 'HTTP 非 2xx，本轮轮询跳过', {
+                            status: res.status,
+                            bodyPreview: previewText(raw),
+                        });
+                    }
+                    let data: ProgressPayload = {};
+                    try {
+                        data = raw ? (JSON.parse(raw) as ProgressPayload) : {};
+                    } catch (parseErr) {
+                        logApiOffPath('GET /api/progress', '进度响应不是合法 JSON，本轮跳过', {
+                            status: res.status,
+                            bodyPreview: previewText(raw),
+                            parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+                        });
+                        await new Promise((r) => setTimeout(r, 500));
+                        continue;
+                    }
                     if (pollCancel.current) return;
                     setProgress(data);
                     if (
@@ -226,11 +244,25 @@ export const BookCard = forwardRef<HTMLElement, Props>(function BookCard(
                         data.status === 'error' ||
                         data.status === 'cancelled'
                     ) {
+                        if (data.status === 'error') {
+                            logApiOffPath('GET /api/progress', '任务状态为 error，停止轮询', {
+                                error: data.error,
+                                status: data.status,
+                            });
+                        }
+                        if (data.status === 'cancelled') {
+                            logApiOffPath('GET /api/progress', '任务状态为 cancelled，停止轮询', {
+                                status: data.status,
+                            });
+                        }
                         setPolling(false);
                         if (data.status === 'completed') setShowResults(true);
                         return;
                     }
                 } catch (err) {
+                    logApiOffPath('GET /api/progress', '请求或解析异常，稍后重试轮询', {
+                        err: err instanceof Error ? err.name + ': ' + err.message : String(err),
+                    });
                     logErrorDetail('progress polling failed', err);
                 }
                 await new Promise((r) => setTimeout(r, 500));
@@ -281,9 +313,38 @@ export const BookCard = forwardRef<HTMLElement, Props>(function BookCard(
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ browse: true }),
             });
-            const data = (await res.json()) as { success?: boolean; path?: string };
-            if (data.success && data.path) setOutputDir(data.path);
+            const raw = await res.text();
+            let data: { success?: boolean; path?: string } = {};
+            try {
+                data = raw ? (JSON.parse(raw) as typeof data) : {};
+            } catch (parseErr) {
+                logApiOffPath('POST /api/settings/output-dir', '响应不是合法 JSON', {
+                    status: res.status,
+                    bodyPreview: previewText(raw),
+                    parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+                });
+                return;
+            }
+            if (!res.ok) {
+                logApiOffPath('POST /api/settings/output-dir', 'HTTP 非 2xx，不更新输出路径', {
+                    status: res.status,
+                    bodyPreview: previewText(raw),
+                });
+                return;
+            }
+            if (data.success && data.path) {
+                setOutputDir(data.path);
+            } else {
+                logApiOffPath('POST /api/settings/output-dir', 'JSON 未同时给出 success 与 path，不更新输入框', {
+                    success: data.success,
+                    hasPath: Boolean(data.path),
+                    bodyPreview: previewText(raw),
+                });
+            }
         } catch (err) {
+            logApiOffPath('POST /api/settings/output-dir', '请求或读 body 失败', {
+                err: err instanceof Error ? err.name + ': ' + err.message : String(err),
+            });
             logErrorDetail('browse request failed', err);
         }
     };
@@ -334,14 +395,51 @@ export const BookCard = forwardRef<HTMLElement, Props>(function BookCard(
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
             });
-            const result = (await res.json()) as { error?: string };
+            const raw = await res.text();
+            let result: { error?: string } = {};
+            try {
+                result = raw ? (JSON.parse(raw) as { error?: string }) : {};
+            } catch (parseErr) {
+                logApiOffPath('POST /api/download', '响应不是合法 JSON，无法启动轮询', {
+                    bookId: book.id,
+                    status: res.status,
+                    bodyPreview: previewText(raw),
+                    parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+                });
+                setProgress({ status: 'error', error: 'Invalid server response' });
+                setDownloading(false);
+                return;
+            }
+            if (!res.ok) {
+                logApiOffPath('POST /api/download', 'HTTP 非 2xx，不启动进度轮询', {
+                    bookId: book.id,
+                    status: res.status,
+                    serverError: result.error,
+                    bodyPreview: previewText(raw),
+                });
+                setProgress({
+                    status: 'error',
+                    error: result.error || `HTTP ${res.status}`,
+                });
+                setDownloading(false);
+                return;
+            }
             if (result.error) {
+                logApiOffPath('POST /api/download', '服务端返回 error，不启动轮询', {
+                    bookId: book.id,
+                    error: result.error,
+                    bodyPreview: previewText(raw),
+                });
                 setProgress({ status: 'error', error: result.error });
                 setDownloading(false);
                 return;
             }
             setPolling(true);
         } catch (err) {
+            logApiOffPath('POST /api/download', '请求或读 body 失败', {
+                bookId: book.id,
+                err: err instanceof Error ? err.name + ': ' + err.message : String(err),
+            });
             logErrorDetail(`download POST failed (bookId=${book.id})`, err);
             setProgress({ status: 'error', error: 'Download failed' });
             setDownloading(false);
@@ -350,8 +448,18 @@ export const BookCard = forwardRef<HTMLElement, Props>(function BookCard(
 
     const cancelDownload = async () => {
         try {
-            await fetch(`${API}/api/cancel`, { method: 'POST' });
+            const res = await fetch(`${API}/api/cancel`, { method: 'POST' });
+            const raw = await res.text();
+            if (!res.ok) {
+                logApiOffPath('POST /api/cancel', 'HTTP 非 2xx，取消请求可能未生效', {
+                    status: res.status,
+                    bodyPreview: previewText(raw),
+                });
+            }
         } catch (err) {
+            logApiOffPath('POST /api/cancel', '请求失败', {
+                err: err instanceof Error ? err.name + ': ' + err.message : String(err),
+            });
             logErrorDetail('cancel request failed', err);
         }
     };

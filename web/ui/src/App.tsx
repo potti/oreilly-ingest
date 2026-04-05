@@ -233,10 +233,18 @@ export default function App() {
                 });
                 return;
             }
-            logApiOffPath('GET /api/search', '请求或解析过程异常', {
-                q,
-                err: err instanceof Error ? err.name + ': ' + err.message : String(err),
-            });
+            if (err instanceof Error && err.name === 'AbortError') {
+                logApiOffPath('GET /api/search', '请求被中止（超时或发起新搜索）', {
+                    q,
+                    seq,
+                    timeoutMs: SEARCH_TIMEOUT_MS,
+                });
+            } else {
+                logApiOffPath('GET /api/search', '请求或解析过程异常', {
+                    q,
+                    err: err instanceof Error ? err.name + ': ' + err.message : String(err),
+                });
+            }
             logErrorDetail('search: failed', err);
             setResults([]);
             setSearchMessage({

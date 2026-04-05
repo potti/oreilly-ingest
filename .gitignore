@@ -27,6 +27,8 @@ Thumbs.db
 
 # Frontend
 web/ui/node_modules/
+# Vite build output (run: cd web/ui && npm ci && npm run build)
+web/static/
 
 # Project specific
 output/
@@ -41,5 +43,3 @@ cookies.json
 .coverage
 .pytest_cache/
 htmlcov/
-node_modules/
-assets/

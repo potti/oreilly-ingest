@@ -5,6 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+echo "==> git pull"
+git pull
+
 echo "==> docker compose down"
 docker compose down --remove-orphans
 

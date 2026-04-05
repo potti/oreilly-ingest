@@ -51,7 +51,19 @@ export function useAuth() {
         try {
             dbg('checkAuth: start', { myGen, url: `${API}/api/status` });
             const res = await fetch(`${API}/api/status`, { signal: ac.signal });
+            dbg('checkAuth: fetch resolved', {
+                myGen,
+                status: res.status,
+                ok: res.ok,
+                note: '若只有 start 没有本行，说明 fetch 未完成或被 abort',
+            });
             const rawText = await res.text();
+            dbg('checkAuth: body received', {
+                myGen,
+                length: rawText.length,
+                preview: previewText(rawText, 160),
+                note: '若有 fetch resolved 无本行，说明卡在读取 body；若有本行无 response，多为 JSON.parse 失败',
+            });
             if (!res.ok) {
                 logApiOffPath('GET /api/status', 'HTTP 状态不是 2xx，不当作会话有效', {
                     status: res.status,
@@ -63,6 +75,11 @@ export function useAuth() {
             try {
                 data = rawText ? (JSON.parse(rawText) as AuthStatus) : {};
             } catch (parseErr) {
+                dbg('checkAuth: parse failed (不会打印 checkAuth: response)', {
+                    myGen,
+                    parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+                    bodyPreview: previewText(rawText),
+                });
                 logApiOffPath('GET /api/status', '响应体不是合法 JSON，无法解析 valid', {
                     myGen,
                     genRefCurrent: genRef.current,
@@ -121,6 +138,13 @@ export function useAuth() {
                 });
             }
         } catch (err) {
+            dbg('checkAuth: catch', {
+                myGen,
+                genRefCurrent: genRef.current,
+                errName: err instanceof Error ? err.name : typeof err,
+                errMessage: err instanceof Error ? err.message : String(err),
+                note: '进入 catch 时不会执行 checkAuth: response（解析成功后的日志）',
+            });
             if (myGen !== genRef.current) {
                 const abortReason =
                     typeof ac.signal.reason === 'string' ? ac.signal.reason : String(ac.signal.reason ?? '');
@@ -174,8 +198,12 @@ export function useAuth() {
     }, []);
 
     useEffect(() => {
-        void checkAuth();
+        /** 推迟到下一 macrotask，避免 React StrictMode「effect → cleanup → effect」同步链里第一次 checkAuth 刚发出就被 abort。 */
+        const scheduleId = window.setTimeout(() => {
+            void checkAuth();
+        }, 0);
         return () => {
+            window.clearTimeout(scheduleId);
             genRef.current += 1;
             dbgVerbose('useAuth cleanup: genRef bumped', genRef.current);
             try {

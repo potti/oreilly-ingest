@@ -11,6 +11,8 @@ let currentExpandedCard = null;
 let selectedResultIndex = -1;
 let defaultOutputDir = '';
 const chaptersCache = {};
+/** Incremented on each checkAuth(); stale responses must not update the UI. */
+let authCheckSeq = 0;
 
 /**
  * Get high-resolution cover URL for expanded view.
@@ -20,6 +22,40 @@ function getHighResCoverUrl(bookId) {
     return `https://learning.oreilly.com/covers/urn:orm:book:${bookId}/400w/`;
 }
 
+function escapeHtml(text) {
+    if (text == null) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+/** Normalize one search hit so the card template always gets safe, consistent fields. */
+function normalizeSearchHit(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id = raw.id != null ? String(raw.id) : '';
+    if (!id) return null;
+    let authors = raw.authors;
+    if (!Array.isArray(authors)) {
+        authors =
+            authors == null || authors === ''
+                ? []
+                : typeof authors === 'string'
+                  ? [authors]
+                  : [];
+    } else {
+        authors = authors.map((a) => (a == null ? '' : String(a))).filter(Boolean);
+    }
+    return {
+        id,
+        title: raw.title != null ? String(raw.title) : 'Untitled',
+        authors,
+        cover_url: raw.cover_url != null ? String(raw.cover_url) : '',
+        publishers: Array.isArray(raw.publishers) ? raw.publishers : [],
+    };
+}
+
 function reasonToLabel(reason) {
     if (reason === 'not_authenticated') return 'Not signed in';
     if (reason === 'subscription_expired') return 'Subscription expired';
@@ -27,12 +63,13 @@ function reasonToLabel(reason) {
 }
 
 async function checkAuth() {
-    const el = document.getElementById('auth-status');
-    const statusDot = el?.querySelector('.status-dot');
-    const statusText = el?.querySelector('.status-text');
+    const seq = ++authCheckSeq;
     const cookieHelp = document.getElementById('cookie-help-section');
 
     function setCheckingUi() {
+        const el = document.getElementById('auth-status');
+        const statusDot = el?.querySelector('.status-dot');
+        const statusText = el?.querySelector('.status-text');
         if (!el || !statusDot) return;
         if (statusText) statusText.textContent = 'Checking...';
         statusDot.className =
@@ -44,6 +81,9 @@ async function checkAuth() {
         if (cookieHelp) {
             cookieHelp.classList.toggle('hidden', !!valid);
         }
+        const el = document.getElementById('auth-status');
+        const statusDot = el?.querySelector('.status-dot');
+        const statusText = el?.querySelector('.status-text');
         if (!el || !statusDot) return;
         if (valid) {
             if (statusText) statusText.textContent = 'Session Valid';
@@ -61,13 +101,18 @@ async function checkAuth() {
     try {
         const res = await fetch(`${API}/api/status`);
         const data = await res.json();
-        const valid = data && data.valid === true;
+        if (seq !== authCheckSeq) return;
+
+        const valid =
+            data &&
+            (data.valid === true || data.valid === 'true' || data.valid === 1);
         if (valid) {
             setValidUi(true);
         } else {
             setValidUi(false, reasonToLabel(data?.reason));
         }
     } catch (err) {
+        if (seq !== authCheckSeq) return;
         console.error('Auth check failed:', err);
         setValidUi(false, 'Status check failed');
     }
@@ -147,7 +192,12 @@ async function search(query) {
 
     try {
         const res = await fetch(`${API}/api/search?q=${encodeURIComponent(query)}`);
-        const data = await res.json();
+        let data;
+        try {
+            data = await res.json();
+        } catch (parseErr) {
+            throw new Error('Invalid JSON from search');
+        }
 
         loader.classList.add('hidden');
         container.innerHTML = '';
@@ -155,27 +205,57 @@ async function search(query) {
         currentExpandedCard = null;
         selectedResultIndex = -1;
 
-        if (!data.results || data.results.length === 0) {
+        if (!res.ok) {
+            const msg = data?.error || `Search failed (HTTP ${res.status})`;
+            container.innerHTML = `
+                <div class="text-center py-16 text-red-600">
+                    <p>${escapeHtml(msg)}</p>
+                </div>
+            `;
+            return;
+        }
+
+        let list = data.results;
+        if (!Array.isArray(list)) list = [];
+
+        if (list.length === 0) {
             container.innerHTML = `
                 <div class="text-center py-16 text-zinc-500">
-                    <p class="text-lg">No books found for "${query}"</p>
+                    <p class="text-lg">No books found for "${escapeHtml(query)}"</p>
                     <p class="text-sm mt-2 text-zinc-400">Try a different search term or ISBN</p>
                 </div>
             `;
             return;
         }
 
-        for (const book of data.results) {
-            const div = document.createElement('article');
-            div.className = 'book-card group bg-white rounded-xl border border-zinc-200 overflow-hidden transition-all duration-200 hover:border-zinc-300 hover:shadow-card-hover';
-            div.dataset.bookId = book.id;
-            div.innerHTML = createBookCardHTML(book);
+        for (const raw of list) {
+            const book = normalizeSearchHit(raw);
+            if (!book) continue;
+            try {
+                const div = document.createElement('article');
+                div.className =
+                    'book-card group bg-white rounded-xl border border-zinc-200 overflow-hidden transition-all duration-200 hover:border-zinc-300 hover:shadow-card-hover';
+                div.dataset.bookId = book.id;
+                div.innerHTML = createBookCardHTML(book);
 
-            setupBookCardEvents(div, book);
-            container.appendChild(div);
+                setupBookCardEvents(div, book);
+                container.appendChild(div);
+            } catch (rowErr) {
+                console.error('Search row render failed:', rowErr, raw);
+            }
+        }
+
+        if (!container.children.length) {
+            container.innerHTML = `
+                <div class="text-center py-16 text-zinc-500">
+                    <p class="text-lg">No books could be displayed</p>
+                    <p class="text-sm mt-2 text-zinc-400">Check the browser console for details</p>
+                </div>
+            `;
         }
     } catch (err) {
         loader.classList.add('hidden');
+        console.error('Search failed:', err);
         container.innerHTML = `
             <div class="text-center py-16 text-red-600">
                 <p>Search failed. Please try again.</p>
@@ -185,13 +265,20 @@ async function search(query) {
 }
 
 function createBookCardHTML(book) {
+    const title = escapeHtml(book.title);
+    const authorsLine = escapeHtml(
+        Array.isArray(book.authors) && book.authors.length
+            ? book.authors.join(', ')
+            : 'Unknown Author'
+    );
+    const coverSrc = escapeHtml(book.cover_url || '');
     return `
         <!-- Collapsed Summary -->
         <div class="book-summary flex items-center gap-4 p-4 cursor-pointer">
-            <img src="${book.cover_url}" alt="${book.title} cover" class="w-12 h-16 object-cover rounded shadow-sm flex-shrink-0" loading="lazy">
+            <img src="${coverSrc}" alt="${title} cover" class="w-12 h-16 object-cover rounded shadow-sm flex-shrink-0" loading="lazy">
             <div class="flex-1 min-w-0">
-                <h3 class="text-[0.9375rem] font-semibold text-zinc-900 leading-snug truncate">${book.title}</h3>
-                <p class="text-sm text-zinc-500 truncate">${book.authors?.join(', ') || 'Unknown Author'}</p>
+                <h3 class="text-[0.9375rem] font-semibold text-zinc-900 leading-snug truncate">${title}</h3>
+                <p class="text-sm text-zinc-500 truncate">${authorsLine}</p>
             </div>
             <svg class="expand-icon w-5 h-5 text-zinc-400 flex-shrink-0 transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M6 9l6 6 6-6"/>
@@ -210,10 +297,10 @@ function createBookCardHTML(book) {
             <div class="relative px-5 pb-5 pt-2 border-t border-zinc-100 animate-fade-in">
                 <!-- Book Detail -->
                 <div class="flex gap-5 py-5">
-                    <img class="w-24 h-32 object-cover rounded-lg shadow-md flex-shrink-0" src="${getHighResCoverUrl(book.id)}" alt="${book.title} cover">
+                    <img class="w-24 h-32 object-cover rounded-lg shadow-md flex-shrink-0" src="${getHighResCoverUrl(book.id)}" alt="${title} cover">
                     <div class="flex-1 min-w-0">
-                        <h2 class="text-xl font-semibold text-zinc-900 leading-tight mb-1">${book.title}</h2>
-                        <p class="text-[0.9375rem] text-zinc-500 mb-3">by ${book.authors?.join(', ') || 'Unknown Author'}</p>
+                        <h2 class="text-xl font-semibold text-zinc-900 leading-tight mb-1">${title}</h2>
+                        <p class="text-[0.9375rem] text-zinc-500 mb-3">by ${authorsLine}</p>
                         <p class="text-sm text-zinc-500 mb-0.5">
                             <span class="text-zinc-400">Publisher:</span>
                             <span class="publisher-value text-zinc-500 animate-pulse-subtle">Loading...</span>

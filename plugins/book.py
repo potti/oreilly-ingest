@@ -42,7 +42,9 @@ class BookPlugin(Plugin):
         data = self.http.get_json(url)
         results = []
         for item in data.get("results", []):
-            if item.get("content_format") != "book":
+            # Only skip when API explicitly marks a non-book hit; missing field is treated as book.
+            fmt = item.get("content_format")
+            if fmt is not None and fmt != "book":
                 continue
             results.append({
                 "id": item.get("archive_id"),

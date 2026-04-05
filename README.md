@@ -31,16 +31,16 @@ Inspired by [safaribooks](https://github.com/lorenzodifuccia/safaribooks) by [@l
 ### Docker
 
 ```bash
-git clone https://github.com/mosaibah/oreilly-downloader.git
-cd oreilly-downloader
+git clone https://github.com/potti/oreilly-ingest.git
+cd oreilly-ingest
 docker compose up -d
 ```
 
 ### Python
 
 ```bash
-git clone https://github.com/mosaibah/oreilly-downloader.git
-cd oreilly-downloader
+git clone https://github.com/potti/oreilly-ingest.git
+cd oreilly-ingest
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python main.py

@@ -4,6 +4,25 @@
  */
 
 const API = '';
+
+/** Verbose logs: localStorage.setItem('oreillyDebug','0') to quiet non-auth noise. */
+function oreillyDebugEnabled() {
+    try {
+        return localStorage.getItem('oreillyDebug') !== '0';
+    } catch {
+        return true;
+    }
+}
+
+/** Always log auth/cookie flows; use dbgVerbose for search/UI noise. */
+function dbg(...args) {
+    console.log('[oreilly-ingest]', ...args);
+}
+
+function dbgVerbose(...args) {
+    if (oreillyDebugEnabled()) console.log('[oreilly-ingest]', ...args);
+}
+
 /** Paste in DevTools on learning.oreilly.com (Console) after signing in. */
 const COOKIE_CONSOLE_CMD =
     "JSON.stringify(document.cookie.split(';').map(c=>c.split('=')).reduce((r,[k,v])=>({...r,[k.trim()]:v?.trim()}),{}))";
@@ -64,13 +83,22 @@ function reasonToLabel(reason) {
 
 async function checkAuth() {
     const seq = ++authCheckSeq;
+    dbg('checkAuth: start', { seq, currentSeq: authCheckSeq, url: `${API}/api/status` });
     const cookieHelp = document.getElementById('cookie-help-section');
 
     function setCheckingUi() {
         const el = document.getElementById('auth-status');
         const statusDot = el?.querySelector('.status-dot');
         const statusText = el?.querySelector('.status-text');
-        if (!el || !statusDot) return;
+        dbg('checkAuth: setCheckingUi', {
+            hasAuthEl: !!el,
+            hasDot: !!statusDot,
+            hasText: !!statusText,
+        });
+        if (!el || !statusDot) {
+            dbg('checkAuth: setCheckingUi aborted (missing #auth-status or .status-dot)');
+            return;
+        }
         if (statusText) statusText.textContent = 'Checking...';
         statusDot.className =
             'status-dot w-2 h-2 rounded-full bg-zinc-300 animate-pulse-subtle';
@@ -78,13 +106,18 @@ async function checkAuth() {
     }
 
     function setValidUi(valid, reasonLabel) {
+        dbg('checkAuth: setValidUi', { valid, reasonLabel, seq, authCheckSeq });
         if (cookieHelp) {
             cookieHelp.classList.toggle('hidden', !!valid);
+            dbg('checkAuth: cookie-help-section hidden=', cookieHelp.classList.contains('hidden'));
         }
         const el = document.getElementById('auth-status');
         const statusDot = el?.querySelector('.status-dot');
         const statusText = el?.querySelector('.status-text');
-        if (!el || !statusDot) return;
+        if (!el || !statusDot) {
+            dbg('checkAuth: setValidUi aborted (missing #auth-status or .status-dot)');
+            return;
+        }
         if (valid) {
             if (statusText) statusText.textContent = 'Session Valid';
             statusDot.className = 'status-dot w-2 h-2 rounded-full bg-emerald-500';
@@ -94,47 +127,91 @@ async function checkAuth() {
             statusDot.className = 'status-dot w-2 h-2 rounded-full bg-amber-500';
             el.className = 'flex items-center gap-2 text-sm text-amber-600';
         }
+        dbg('checkAuth: setValidUi applied', {
+            statusText: statusText?.textContent,
+            dotClass: statusDot.className,
+        });
     }
 
     setCheckingUi();
 
     try {
         const res = await fetch(`${API}/api/status`);
-        const data = await res.json();
-        if (seq !== authCheckSeq) return;
+        const rawText = await res.text();
+        dbg('checkAuth: response', {
+            seq,
+            authCheckSeq,
+            httpOk: res.ok,
+            status: res.status,
+            contentType: res.headers.get('Content-Type'),
+            bodyPreview: rawText.slice(0, 300),
+        });
+
+        let data;
+        try {
+            data = rawText ? JSON.parse(rawText) : {};
+        } catch (parseErr) {
+            dbg('checkAuth: JSON.parse failed', parseErr, rawText.slice(0, 200));
+            throw parseErr;
+        }
+
+        if (seq !== authCheckSeq) {
+            dbg('checkAuth: stale response ignored', { seq, authCheckSeq, data });
+            return;
+        }
 
         const valid =
             data &&
             (data.valid === true || data.valid === 'true' || data.valid === 1);
+        dbg('checkAuth: parsed', { valid, reason: data?.reason, full: data });
         if (valid) {
             setValidUi(true);
         } else {
             setValidUi(false, reasonToLabel(data?.reason));
         }
     } catch (err) {
-        if (seq !== authCheckSeq) return;
-        console.error('Auth check failed:', err);
+        if (seq !== authCheckSeq) {
+            dbg('checkAuth: error on stale seq, ignored', { seq, authCheckSeq, err });
+            return;
+        }
+        console.error('[oreilly-ingest] checkAuth failed:', err);
         setValidUi(false, 'Status check failed');
     }
 }
 
 function showCookieModal() {
-    document.getElementById('cookie-modal').classList.remove('hidden');
+    const modal = document.getElementById('cookie-modal');
+    dbg('showCookieModal', { found: !!modal });
+    if (!modal) {
+        console.error('[oreilly-ingest] showCookieModal: #cookie-modal not found');
+        return;
+    }
+    modal.classList.remove('hidden');
     document.getElementById('cookie-input').value = '';
     document.getElementById('cookie-error').classList.add('hidden');
     document.body.style.overflow = 'hidden';
+    dbg('showCookieModal: open, classList=', modal.className);
 }
 
 function hideCookieModal() {
-    document.getElementById('cookie-modal').classList.add('hidden');
+    const modal = document.getElementById('cookie-modal');
+    dbg('hideCookieModal', { found: !!modal });
+    if (!modal) {
+        console.error('[oreilly-ingest] hideCookieModal: #cookie-modal not found');
+        return;
+    }
+    modal.classList.add('hidden');
     document.body.style.overflow = '';
+    dbg('hideCookieModal: closed, classList=', modal.className);
 }
 
 async function saveCookies() {
+    dbg('saveCookies: invoked');
     const input = document.getElementById('cookie-input').value.trim();
     const errorEl = document.getElementById('cookie-error');
 
     if (!input) {
+        dbg('saveCookies: empty input');
         errorEl.textContent = 'Please paste your cookie JSON';
         errorEl.classList.remove('hidden');
         return;
@@ -146,29 +223,78 @@ async function saveCookies() {
         if (typeof cookies !== 'object' || Array.isArray(cookies)) {
             throw new Error('Must be a JSON object');
         }
+        dbg('saveCookies: parsed keys count', Object.keys(cookies).length);
     } catch (e) {
+        dbg('saveCookies: JSON parse failed', e.message);
         errorEl.textContent = 'Invalid JSON format: ' + e.message;
         errorEl.classList.remove('hidden');
         return;
     }
 
     try {
-        const res = await fetch(`${API}/api/cookies`, {
+        const url = `${API}/api/cookies`;
+        dbg('saveCookies: POST', url);
+        const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(cookies)
+            body: JSON.stringify(cookies),
         });
-        const data = await res.json();
+        const rawText = await res.text();
+        dbg('saveCookies: response', {
+            ok: res.ok,
+            status: res.status,
+            contentType: res.headers.get('Content-Type'),
+            bodyLength: rawText.length,
+            bodyPreview: rawText.slice(0, 400),
+        });
 
-        if (data.error) {
-            errorEl.textContent = data.error;
+        let data;
+        try {
+            data = rawText ? JSON.parse(rawText) : {};
+        } catch (parseErr) {
+            console.error('[oreilly-ingest] saveCookies: response is not JSON', parseErr);
+            errorEl.textContent = 'Server returned non-JSON response';
             errorEl.classList.remove('hidden');
             return;
         }
 
+        dbg('saveCookies: parsed JSON', data);
+
+        if (!res.ok) {
+            const msg = data?.error || `HTTP ${res.status}`;
+            dbg('saveCookies: HTTP error', msg);
+            errorEl.textContent = msg;
+            errorEl.classList.remove('hidden');
+            return;
+        }
+
+        if (data.error != null && data.error !== '') {
+            dbg('saveCookies: API error field', data.error);
+            errorEl.textContent = String(data.error);
+            errorEl.classList.remove('hidden');
+            return;
+        }
+
+        const success =
+            data.success === true ||
+            data.success === 'true' ||
+            (data.success !== false && data.count != null);
+        dbg('saveCookies: success gate', { success, successField: data.success, count: data.count });
+
+        if (!success) {
+            dbg('saveCookies: unexpected body (no success), still closing modal');
+        }
+
         hideCookieModal();
-        checkAuth();
+        dbg('saveCookies: after hideCookieModal, scheduling checkAuth');
+        try {
+            await checkAuth();
+            dbg('saveCookies: checkAuth finished');
+        } catch (authErr) {
+            console.error('[oreilly-ingest] saveCookies: checkAuth threw', authErr);
+        }
     } catch (err) {
+        console.error('[oreilly-ingest] saveCookies failed:', err);
         errorEl.textContent = 'Failed to save cookies';
         errorEl.classList.remove('hidden');
     }
@@ -176,15 +302,18 @@ async function saveCookies() {
 
 async function loadDefaultOutputDir() {
     try {
+        dbgVerbose('loadDefaultOutputDir: GET /api/settings');
         const res = await fetch(`${API}/api/settings`);
         const data = await res.json();
         defaultOutputDir = data.output_dir;
+        dbgVerbose('loadDefaultOutputDir: output_dir=', defaultOutputDir);
     } catch (err) {
-        console.error('Failed to load default output dir:', err);
+        console.error('[oreilly-ingest] loadDefaultOutputDir failed:', err);
     }
 }
 
 async function search(query) {
+    dbgVerbose('search: query=', query);
     const loader = document.getElementById('search-loader');
     const container = document.getElementById('search-results');
 
@@ -246,16 +375,19 @@ async function search(query) {
         }
 
         if (!container.children.length) {
+            dbgVerbose('search: no cards rendered after loop');
             container.innerHTML = `
                 <div class="text-center py-16 text-zinc-500">
                     <p class="text-lg">No books could be displayed</p>
                     <p class="text-sm mt-2 text-zinc-400">Check the browser console for details</p>
                 </div>
             `;
+        } else {
+            dbgVerbose('search: rendered', container.children.length, 'cards');
         }
     } catch (err) {
         loader.classList.add('hidden');
-        console.error('Search failed:', err);
+        console.error('[oreilly-ingest] search failed:', err);
         container.innerHTML = `
             <div class="text-center py-16 text-red-600">
                 <p>Search failed. Please try again.</p>
@@ -1099,6 +1231,17 @@ function updateSelectedResult() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    dbg('DOMContentLoaded', {
+        href: location.href,
+        oreillyDebug: (() => {
+            try {
+                return localStorage.getItem('oreillyDebug');
+            } catch {
+                return null;
+            }
+        })(),
+        hint: "set localStorage oreillyDebug='0' to reduce dbgVerbose logs",
+    });
     const cookieSnippet = document.getElementById('cookie-cmd-snippet');
     if (cookieSnippet) cookieSnippet.textContent = COOKIE_CONSOLE_CMD;
     const copyCookieCmdBtn = document.getElementById('copy-cookie-cmd-btn');
@@ -1122,9 +1265,20 @@ document.addEventListener('DOMContentLoaded', () => {
     loadDefaultOutputDir();
 
     // Cookie modal
-    document.getElementById('login-btn').onclick = showCookieModal;
-    document.getElementById('cancel-modal-btn').onclick = hideCookieModal;
-    document.getElementById('save-cookies-btn').onclick = saveCookies;
+    document.getElementById('login-btn').onclick = () => {
+        dbg('login-btn click');
+        showCookieModal();
+    };
+    document.getElementById('cancel-modal-btn').onclick = () => {
+        dbg('cancel-modal-btn click');
+        hideCookieModal();
+    };
+    document.getElementById('save-cookies-btn').onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dbg('save-cookies-btn click');
+        saveCookies();
+    };
     document.getElementById('cookie-modal').onclick = (e) => {
         if (e.target.id === 'cookie-modal') hideCookieModal();
     };

@@ -1,11 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { API, AUTH_STATUS_TIMEOUT_MS } from '../constants';
+import { API, AUTH_STATUS_BODY_READ_MS, AUTH_STATUS_TIMEOUT_MS } from '../constants';
 import { dbg, dbgVerbose, logApiOffPath, logError, logErrorDetail, previewText, reasonToLabel } from '../utils';
 import type { AuthStatus } from '../types';
 
 /** Passed to AbortController.abort(reason)，便于区分「被新一轮 checkAuth 顶替」和「定时超时」 */
 const AUTH_ABORT_REPLACED = 'auth_replaced';
 const AUTH_ABORT_STATUS_TIMEOUT = 'auth_status_timeout';
+
+async function readResponseTextWithTimeout(res: Response, ms: number): Promise<string> {
+    let timeoutId: number | undefined;
+    try {
+        return await Promise.race([
+            res.text(),
+            new Promise<never>((_, reject) => {
+                timeoutId = window.setTimeout(() => {
+                    reject(
+                        new Error(
+                            `response.text() 超过 ${ms}ms — 常见于安全/反钓鱼类扩展拖住响应体；可试无痕窗口或对当前站点停用扩展`,
+                        ),
+                    );
+                }, ms);
+            }),
+        ]);
+    } finally {
+        if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    }
+}
 
 type AuthUi = {
     phase: 'checking' | 'ready';
@@ -57,7 +77,12 @@ export function useAuth() {
                 ok: res.ok,
                 note: '若只有 start 没有本行，说明 fetch 未完成或被 abort',
             });
-            const rawText = await res.text();
+            dbg('checkAuth: reading body', {
+                myGen,
+                bodyReadTimeoutMs: AUTH_STATUS_BODY_READ_MS,
+                note: '若本行之后一直没有 body received，说明卡在 res.text()，多为浏览器扩展拖住 body',
+            });
+            const rawText = await readResponseTextWithTimeout(res, AUTH_STATUS_BODY_READ_MS);
             dbg('checkAuth: body received', {
                 myGen,
                 length: rawText.length,

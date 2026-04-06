@@ -448,8 +448,6 @@ export default function App() {
                     </section>
                 )}
 
-                <DownloadedList outputDir={defaultOutputDir} />
-
                 <section className="mb-10">
                     <div className="relative group">
                         <div className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400 transition-colors group-focus-within:text-oreilly-blue">
@@ -512,6 +510,8 @@ export default function App() {
                         )}
                     </div>
                 </section>
+
+                <DownloadedList outputDir={defaultOutputDir} />
 
                 <section
                     id="search-results"

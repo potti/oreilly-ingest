@@ -32,7 +32,26 @@ def _call_ollama(prompt: str, *, ollama_url: str, model: str, timeout_seconds: i
     payload = resp.json()
     if not isinstance(payload, dict) or "response" not in payload:
         raise ValueError("Invalid Ollama response payload")
-    return str(payload["response"])
+    text = str(payload["response"])
+    if text.strip() == "":
+        raise ValueError("Empty Ollama response")
+    return text
+
+
+def _extract_json_object(raw: str) -> str:
+    """Best-effort: pull the first JSON object from a raw model response."""
+    s = (raw or "").strip()
+    if not s:
+        return s
+    # Common case: model already returns pure JSON
+    if s.startswith("{") and s.endswith("}"):
+        return s
+    # Fallback: find first '{' and last '}' and parse that slice
+    start = s.find("{")
+    end = s.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return s[start : end + 1]
+    return s
 
 
 def iter_chapters_from_oebps(book_dir: Path) -> Iterator[tuple[str, str]]:
@@ -92,6 +111,8 @@ def generate_agent_knowledge(
     book_dir = book_dir.resolve()
     out_dir = book_dir / "Knowledge"
     out_dir.mkdir(parents=True, exist_ok=True)
+    debug_dir = out_dir / "_debug_ollama"
+    debug_dir.mkdir(parents=True, exist_ok=True)
 
     chapters = list(iter_chapters_from_oebps(book_dir))
     total = len(chapters)
@@ -129,13 +150,16 @@ def generate_agent_knowledge(
         )
         try:
             result = _call_ollama(prompt, ollama_url=ollama_url, model=model)
-            chapter_json = json.loads(result)
+            (debug_dir / f"chapter_{idx:03d}_raw.txt").write_text(result, encoding="utf-8")
+            chapter_json = json.loads(_extract_json_object(result))
             full_json["chapters"][f"chapter_{idx}"] = chapter_json
         except Exception as e:
+            # Keep the failure debuggable without crashing the whole run.
+            err_txt = f"{type(e).__name__}: {e}"
             full_json["chapters"][f"chapter_{idx}"] = {
                 "title": title,
                 "key_points": [],
-                "actionable": f"处理失败: {e}",
+                "actionable": f"处理失败: {err_txt}",
             }
 
     agent_path = out_dir / "agent_knowledge.json"

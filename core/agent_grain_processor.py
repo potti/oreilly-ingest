@@ -156,6 +156,10 @@ def generate_agent_knowledge(
         except Exception as e:
             # Keep the failure debuggable without crashing the whole run.
             err_txt = f"{type(e).__name__}: {e}"
+            try:
+                (debug_dir / f"chapter_{idx:03d}_error.txt").write_text(err_txt, encoding="utf-8")
+            except OSError:
+                pass
             full_json["chapters"][f"chapter_{idx}"] = {
                 "title": title,
                 "key_points": [],
@@ -177,6 +181,7 @@ def generate_agent_knowledge(
     )
     try:
         graph_raw = _call_ollama(graph_prompt, ollama_url=ollama_url, model=model)
+        (debug_dir / "graph_raw.txt").write_text(graph_raw, encoding="utf-8")
         kg = json.loads(graph_raw)
     except Exception:
         kg = {"nodes": [], "edges": []}

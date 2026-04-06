@@ -4,6 +4,7 @@ import type { DownloadListItem, DownloadListResponse } from '../types';
 import { logApiOffPath, logErrorDetail, previewText } from '../utils';
 
 const PAGE_SIZE = 10;
+const KNOWLEDGE_POLL_MS = 2500;
 
 type Props = {
     outputDir: string;
@@ -15,6 +16,16 @@ export function DownloadedList({ outputDir }: Props) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [revealBusy, setRevealBusy] = useState<string | null>(null);
+    const [knowledgeBusy, setKnowledgeBusy] = useState<string | null>(null);
+    const [knowledgeProgress, setKnowledgeProgress] = useState<{
+        status?: string;
+        percentage?: number;
+        message?: string;
+        book_dir?: string;
+        agent_json?: string;
+        kg_graph?: string;
+        error?: string;
+    } | null>(null);
 
     useEffect(() => {
         setPage(1);
@@ -80,6 +91,43 @@ export function DownloadedList({ outputDir }: Props) {
     const total = data?.total ?? 0;
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
+    useEffect(() => {
+        if (!knowledgeBusy) return;
+        let stopped = false;
+        const timer = window.setInterval(() => {
+            if (stopped) return;
+            void (async () => {
+                try {
+                    const res = await fetch(`${API}/api/progress`);
+                    const raw = await res.text();
+                    if (!res.ok) return;
+                    let parsed: any = {};
+                    try {
+                        parsed = raw ? JSON.parse(raw) : {};
+                    } catch {
+                        return;
+                    }
+                    setKnowledgeProgress(parsed);
+
+                    const status = String(parsed?.status || '');
+                    const bookDir = typeof parsed?.book_dir === 'string' ? parsed.book_dir : '';
+                    const stillThisTask = bookDir && knowledgeBusy && bookDir === knowledgeBusy;
+                    if (!stillThisTask) return;
+
+                    if (status === 'knowledge_completed' || status === 'knowledge_error') {
+                        setKnowledgeBusy(null);
+                    }
+                } catch {
+                    // ignore transient polling failures
+                }
+            })();
+        }, KNOWLEDGE_POLL_MS);
+        return () => {
+            stopped = true;
+            window.clearInterval(timer);
+        };
+    }, [knowledgeBusy]);
+
     const revealFolder = useCallback(async (item: DownloadListItem) => {
         setRevealBusy(item.path);
         try {
@@ -108,6 +156,50 @@ export function DownloadedList({ outputDir }: Props) {
             setRevealBusy(null);
         }
     }, []);
+
+    const generateKnowledge = useCallback(
+        async (item: DownloadListItem) => {
+            // Keep a long-running busy state until /api/progress reports completion.
+            setKnowledgeBusy(item.path);
+            setKnowledgeProgress(null);
+            try {
+                const body: { book_name: string; output_dir?: string } = { book_name: item.folder_name };
+                const trimmed = outputDir.trim();
+                if (trimmed) body.output_dir = trimmed;
+
+                const res = await fetch(`${API}/api/generate_knowledge`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const raw = await res.text();
+                let parsed: { error?: string; status?: string } = {};
+                try {
+                    parsed = raw ? (JSON.parse(raw) as typeof parsed) : {};
+                } catch {
+                    /* ignore */
+                }
+                if (!res.ok) {
+                    const msg = parsed.error || `Request failed (HTTP ${res.status})`;
+                    logApiOffPath('POST /api/generate_knowledge', '生成知识失败', {
+                        status: res.status,
+                        book_name: item.folder_name,
+                        bodyPreview: previewText(raw),
+                    });
+                    setError(msg);
+                    setKnowledgeBusy(null);
+                    return;
+                }
+            } catch (err) {
+                logErrorDetail('generate knowledge failed', err);
+                setError(err instanceof Error ? err.message : String(err));
+                setKnowledgeBusy(null);
+            } finally {
+                // Do not clear busy here: generation continues server-side.
+            }
+        },
+        [outputDir],
+    );
 
     const fmtTime = (iso: string) => {
         try {
@@ -171,14 +263,26 @@ export function DownloadedList({ outputDir }: Props) {
                                         <span>{fmtTime(item.modified_at)}</span>
                                     </div>
                                 </div>
-                                <button
-                                    type="button"
-                                    disabled={revealBusy === item.path}
-                                    onClick={() => void revealFolder(item)}
-                                    className="shrink-0 self-start sm:self-center px-3 py-1.5 text-xs font-medium text-oreilly-blue border border-oreilly-blue/30 rounded-lg hover:bg-oreilly-blue/5 disabled:opacity-50 transition-colors"
-                                >
-                                    {revealBusy === item.path ? '打开中…' : '在文件夹中显示'}
-                                </button>
+                                <div className="shrink-0 self-start sm:self-center flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        disabled={knowledgeBusy === item.path}
+                                        onClick={() => void generateKnowledge(item)}
+                                        className="px-3 py-1.5 text-xs font-medium text-oreilly-red border border-oreilly-red/30 rounded-lg hover:bg-oreilly-red/5 disabled:opacity-50 transition-colors"
+                                    >
+                                        {knowledgeBusy === item.path
+                                            ? `生成中…${typeof knowledgeProgress?.percentage === 'number' ? ` ${knowledgeProgress.percentage}%` : ''}`
+                                            : '生成知识'}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        disabled={revealBusy === item.path}
+                                        onClick={() => void revealFolder(item)}
+                                        className="px-3 py-1.5 text-xs font-medium text-oreilly-blue border border-oreilly-blue/30 rounded-lg hover:bg-oreilly-blue/5 disabled:opacity-50 transition-colors"
+                                    >
+                                        {revealBusy === item.path ? '打开中…' : '在文件夹中显示'}
+                                    </button>
+                                </div>
                             </li>
                         ))}
                     </ul>

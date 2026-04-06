@@ -24,6 +24,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
     # both pass the in-progress check.
     _download_start_lock = threading.Lock()
     _download_thread: threading.Thread | None = None
+    _knowledge_thread: threading.Thread | None = None
     _cancel_requested: bool = False
 
     _TERMINAL_STATUSES = frozenset(("completed", "error", "cancelled"))
@@ -80,6 +81,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
 
         if post_path == "/api/download":
             self._handle_download(data)
+        elif post_path == "/api/generate_knowledge":
+            self._handle_generate_knowledge(data)
         elif post_path in ("/api/cookies", "/api/settings/cookies"):
             self._handle_cookies(data)
         elif post_path == "/api/cancel":
@@ -434,6 +437,128 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
 
         self._send_json({"status": "started", "book_id": book_id})
 
+    def _resolve_book_dir_by_name(self, book_name: str, output_dir: Path) -> Path | None:
+        """Resolve a downloaded book directory by folder name or human title.
+
+        - Prefer exact folder match under output_dir.
+        - Fallback to slugified title match.
+        """
+        from utils import slugify
+
+        name = (book_name or "").strip()
+        if not name:
+            return None
+        out = output_dir.resolve()
+        if not out.is_dir():
+            return None
+
+        # 1) Exact directory name
+        direct = out / name
+        if direct.is_dir():
+            return direct
+
+        # 2) Slugified match against directory names
+        target_slug = slugify(name)
+        if not target_slug:
+            return None
+        for child in out.iterdir():
+            if not child.is_dir():
+                continue
+            # Exact slug match (most common) or slug prefix match (when conflict resolution appends -<book_id>)
+            if child.name == target_slug or child.name.startswith(target_slug + "-"):
+                return child
+        return None
+
+    def _handle_generate_knowledge(self, data: dict):
+        """Generate knowledge JSON under the book folder.
+
+        Body: {"book_name": "<folder_name or title>", "output_dir": "...?"}
+        """
+        book_name = (data.get("book_name") or data.get("title") or data.get("name") or "").strip()
+        if not book_name:
+            self._send_json({"error": "book_name required"}, 400)
+            return
+
+        output_plugin = self.kernel["output"]
+        out_dir_str = (data.get("output_dir") or "").strip()
+        if out_dir_str:
+            ok, msg, out_dir = output_plugin.validate_dir(out_dir_str)
+            if not ok or out_dir is None:
+                self._send_json({"error": msg}, 400)
+                return
+        else:
+            out_dir = output_plugin.get_default_dir()
+
+        book_dir = self._resolve_book_dir_by_name(book_name, out_dir)
+        if book_dir is None:
+            self._send_json({"error": f"Book directory not found under output: {book_name}"}, 404)
+            return
+
+        start_response: tuple[dict, int] | None = None
+        with DownloaderHandler._download_start_lock:
+            with self._progress_lock:
+                dthr = DownloaderHandler._download_thread
+                kth = DownloaderHandler._knowledge_thread
+                if (dthr is not None and dthr.is_alive()) or (kth is not None and kth.is_alive()):
+                    start_response = ({"error": "Another task is already running"}, 409)
+
+            if start_response is None:
+                worker = threading.Thread(
+                    target=self._generate_knowledge_async,
+                    args=(book_dir,),
+                    daemon=True,
+                )
+                with self._progress_lock:
+                    DownloaderHandler._knowledge_thread = worker
+                    self.download_progress = {
+                        "status": "generating_knowledge",
+                        "percentage": 0,
+                        "message": f"Starting knowledge generation: {book_dir.name}",
+                        "book_dir": str(book_dir),
+                        "book_name": book_name,
+                    }
+                worker.start()
+
+        if start_response is not None:
+            self._send_json(start_response[0], start_response[1])
+            return
+
+        self._send_json({"status": "started", "book_dir": str(book_dir), "book_name": book_name})
+
+    def _generate_knowledge_async(self, book_dir: Path):
+        try:
+            from core.agent_grain_processor import generate_agent_knowledge
+
+            def on_prog(phase: str, cur: int, total: int):
+                pct = 0
+                if phase == "starting":
+                    pct = 0
+                elif phase == "processing_chapter":
+                    pct = 5 + int((cur / max(total, 1)) * 90)
+                elif phase == "generating_graph":
+                    pct = 97
+                elif phase == "completed":
+                    pct = 100
+                self._set_progress(
+                    {
+                        "status": "generating_knowledge",
+                        "percentage": min(99, pct) if pct < 100 else 100,
+                        "message": f"{phase} {cur}/{total}",
+                        "book_dir": str(book_dir),
+                    }
+                )
+
+            result = generate_agent_knowledge(book_dir, progress_callback=on_prog)
+            self._set_progress(
+                {
+                    "status": "knowledge_completed",
+                    "percentage": 100,
+                    "book_dir": str(book_dir),
+                    **result,
+                }
+            )
+        except Exception as e:
+            self._set_progress({"status": "knowledge_error", "error": str(e), "book_dir": str(book_dir)})
     def _download_book_async(
         self,
         book_id: str,

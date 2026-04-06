@@ -5,6 +5,10 @@ import re
 
 def sanitize_filename(name: str) -> str:
     """Sanitize a string for use as a cross-platform filename."""
+    name = str(name).strip()
+    # API/catalog titles sometimes include wrapping quotes, e.g. 'Building …'
+    while len(name) >= 2 and name[0] == name[-1] and name[0] in "'\"":
+        name = name[1:-1].strip()
     name = name.replace("/", "-").replace("\\", "-")
     name = name.replace(":", " -").replace("?", "").replace("*", "")
     name = name.replace('"', "'").replace("<", "").replace(">", "")

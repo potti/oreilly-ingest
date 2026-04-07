@@ -55,6 +55,9 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             params = parse_qs(parsed.query)
             query = params.get("q", params.get("query", [""]))[0]
             self._handle_search(query)
+        elif path == "/api/oreilly/search":
+            params = parse_qs(parsed.query)
+            self._handle_oreilly_search_proxy(params)
         elif match := re.match(r"/api/book/([^/]+)/chapters$", path):
             self._handle_chapters_list(match.group(1))
         elif match := re.match(r"/api/book/([^/]+)$", path):
@@ -112,6 +115,47 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         book = self.kernel["book"]
         results = book.search(query)
         self._send_json({"results": results})
+
+    def _handle_oreilly_search_proxy(self, params: dict):
+        """Proxy O'Reilly /api/v2/search/ and return raw JSON.
+
+        This is useful when callers want full search response (facets, next/previous, etc.)
+        rather than the simplified `/api/search` results.
+        """
+        # Convenience alias: allow q=... as query=...
+        if "q" in params and "query" not in params:
+            params["query"] = params["q"]
+
+        # requests supports dict[str, list[str]] for multi-value query params.
+        http = self.kernel.http
+        try:
+            resp = http.get(f"{config.API_V2}/search/", params=params, timeout=config.REQUEST_TIMEOUT)
+        except Exception as e:
+            self._send_json({"error": str(e)}, 502)
+            return
+
+        status = getattr(resp, "status_code", 502) or 502
+        try:
+            data = resp.json()
+            if isinstance(data, dict):
+                self._send_json(data, status)
+            else:
+                self._send_json({"error": "Upstream returned non-object JSON", "data": data}, status)
+        except Exception:
+            # Upstream sometimes returns HTML on auth failure; surface as text.
+            text = ""
+            try:
+                text = (resp.text or "")[:4000]
+            except Exception:
+                text = ""
+            self._send_json(
+                {
+                    "error": "Upstream response is not JSON",
+                    "status_code": status,
+                    "body_preview": text,
+                },
+                status,
+            )
 
     def _handle_book_info(self, book_id: str):
         book = self.kernel["book"]

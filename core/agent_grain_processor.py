@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 from core.text_extractor import TextExtractor
 
 # Ollama 直连示例: http://127.0.0.1:11434 ；经 Nginx 反代时常为 http://host/ollama（最终请求 .../api/generate）
-DEFAULT_OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
+DEFAULT_OLLAMA_URL = os.getenv("OLLAMA_URL", "http://172.31.38.168/ollama")
 DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "gemma4-fast")
 # 客户端 read timeout；若经 Nginx，需保证 proxy_read_timeout / send_timeout 大于此值，否则会先被网关断开
 DEFAULT_OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "600"))

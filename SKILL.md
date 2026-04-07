@@ -1,6 +1,6 @@
 ---
 name: oreilly-ingest-openclaw
-description: Automates O'Reilly book discovery, download, knowledge generation, and property-graph export using oreilly-ingest web APIs. Use when the user mentions OpenClaw, polling search results, downloading EPUBs, generating knowledge, fetching agent_knowledge.json, building a Property Graph, or monitoring cookie/auth status.
+description: Automates O'Reilly book discovery, download (default JSON), knowledge generation, and property-graph export using oreilly-ingest web APIs. Use when the user mentions OpenClaw, polling search results, downloading books (json/epub), generating knowledge, fetching agent_knowledge.json, building a Property Graph, or monitoring cookie/auth status.
 ---
 
 # O'Reilly Ingest + OpenClaw Orchestration
@@ -9,7 +9,7 @@ This skill teaches an agent (OpenClaw) how to use the `oreilly-ingest` local web
 
 - search books
 - poll a rolling book list and pick new ones
-- download EPUB
+- download JSON
 - generate knowledge and wait for completion
 - fetch `agent_knowledge.json`
 - run the agent's *own* model to extract a high-quality Property Graph (simulate `generate_kg_edges`)
@@ -58,7 +58,7 @@ From the repo root:
 ### Download book
 
 - `POST /api/download`
-  - Body: `{ "book_id": "<isbn/archive_id>", "format": "epub", "output_dir": "...?" }`
+  - Body: `{ "book_id": "<isbn/archive_id>", "format": "json", "output_dir": "...?" }`
   - Returns `{ "status": "started", "book_id": "..." }` or `409` if already running
 
 ### Generate knowledge
@@ -109,9 +109,9 @@ Maintain a small state store (in memory or persisted) with:
    - If you store by `book_id`, match against folder naming conventions you use
    - If you store by `title`, match slugified folder names used by the app
 
-### 2.2 Download EPUB
+### 2.2 Download JSON
 
-1. `POST /api/download` with `{ book_id, format: "epub" }`
+1. `POST /api/download` with `{ book_id, format: "json" }`
 2. Poll `GET /api/progress` until:
    - `status == "completed"` → download done
    - or `status in ("error","cancelled")` → abort + notify

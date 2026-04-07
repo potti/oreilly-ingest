@@ -1,8 +1,12 @@
 """Web server for O'Reilly Ingest."""
 
 import json
+import logging
+import logging.handlers
+import os
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -12,6 +16,43 @@ from core import Kernel, create_default_kernel
 from plugins import ChunkConfig
 from plugins.downloader import DownloadProgress
 import config
+
+
+def _setup_logging() -> logging.Logger:
+    logs_dir = Path(os.getenv("OREILLY_INGEST_LOG_DIR", str(config.BASE_DIR / "logs"))).resolve()
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    logger = logging.getLogger("oreilly_ingest")
+    if logger.handlers:
+        return logger
+
+    level_name = os.getenv("OREILLY_INGEST_LOG_LEVEL", "INFO").upper().strip()
+    level = getattr(logging, level_name, logging.INFO)
+    logger.setLevel(level)
+
+    fmt = logging.Formatter(
+        fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S%z",
+    )
+
+    file_handler = logging.handlers.RotatingFileHandler(
+        filename=str(logs_dir / "server.log"),
+        maxBytes=int(os.getenv("OREILLY_INGEST_LOG_MAX_BYTES", str(10 * 1024 * 1024))),
+        backupCount=int(os.getenv("OREILLY_INGEST_LOG_BACKUPS", "5")),
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(fmt)
+    logger.addHandler(file_handler)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(fmt)
+    logger.addHandler(stream_handler)
+
+    logger.propagate = False
+    return logger
+
+
+LOGGER = _setup_logging()
 
 
 class DownloaderHandler(SimpleHTTPRequestHandler):
@@ -43,9 +84,16 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
 
     def __init__(self, *args, **kwargs):
         self.static_dir = Path(__file__).parent / "static"
+        self._last_status_code: int | None = None
+        self._request_start_ts: float | None = None
         super().__init__(*args, directory=str(self.static_dir), **kwargs)
 
+    def send_response(self, code, message=None):
+        self._last_status_code = int(code)
+        super().send_response(code, message)
+
     def do_GET(self):
+        self._request_start_ts = time.time()
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -82,7 +130,11 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         else:
             super().do_GET()
 
+        if path.startswith("/api/"):
+            self._log_api_request()
+
     def do_POST(self):
+        self._request_start_ts = time.time()
         post_path = urlparse(self.path).path
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length).decode("utf-8")
@@ -106,6 +158,30 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             self._handle_set_output_dir(data)
         else:
             self._send_json({"error": "Not found"}, 404)
+
+        if post_path.startswith("/api/"):
+            self._log_api_request()
+
+    def _log_api_request(self):
+        try:
+            elapsed_ms = 0
+            if self._request_start_ts is not None:
+                elapsed_ms = int((time.time() - self._request_start_ts) * 1000)
+            parsed = urlparse(self.path)
+            client_ip = getattr(self, "client_address", ("", 0))[0]
+            ua = self.headers.get("User-Agent", "")
+            LOGGER.info(
+                "api_request method=%s path=%s query=%s status=%s elapsed_ms=%s ip=%s ua=%s",
+                self.command,
+                parsed.path,
+                parsed.query,
+                self._last_status_code,
+                elapsed_ms,
+                client_ip,
+                ua,
+            )
+        except Exception:
+            pass
 
     def _handle_status(self):
         auth = self.kernel["auth"]
@@ -488,7 +564,12 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         """Start a book download."""
         book_id = data.get("book_id")
         output_format = data.get("format", "epub")
-        print(f"[DEBUG] Received format from request: '{output_format}' (raw data: {data.get('format')})")
+        LOGGER.debug(
+            "download_request book_id=%s format=%s raw_format=%s",
+            book_id,
+            output_format,
+            data.get("format"),
+        )
         selected_chapters = data.get("chapters")
         output_dir_str = data.get("output_dir")
         chunking_opts = data.get("chunking", {})
@@ -522,7 +603,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         # Parse formats using plugin (single source of truth)
         from plugins.downloader import DownloaderPlugin
         formats = DownloaderPlugin.parse_formats(output_format)
-        print(f"[DEBUG] Parsed formats: {formats}")
+        LOGGER.debug("download_request parsed_formats=%s", formats)
 
         start_response: tuple[dict, int] | None = None
         with DownloaderHandler._download_start_lock:
@@ -930,7 +1011,11 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         self.wfile.flush()
 
     def log_message(self, format, *args):
-        print(f"[HTTP] {args[0]}")
+        # Route default http.server logs into our logger.
+        try:
+            LOGGER.info("http %s", (format % args))
+        except Exception:
+            pass
 
 
 def create_server(host: str = "localhost", port: int = 8000) -> ThreadingHTTPServer:
@@ -946,5 +1031,5 @@ def create_server(host: str = "localhost", port: int = 8000) -> ThreadingHTTPSer
 def run_server(host: str = "localhost", port: int = 8000):
     """Start the HTTP server."""
     server = create_server(host, port)
-    print(f"Server running at http://{host}:{port}")
+    LOGGER.info("Server running at http://%s:%s", host, port)
     server.serve_forever()

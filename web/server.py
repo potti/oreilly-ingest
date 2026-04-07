@@ -472,9 +472,10 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
     def _handle_generate_knowledge(self, data: dict):
         """Generate knowledge JSON under the book folder.
 
-        Body: {"book_name": "<folder_name or title>", "output_dir": "...?"}
+        Body: {"book_name": "<folder_name or title>", "output_dir": "...?", "force_full": false}
         """
         book_name = (data.get("book_name") or data.get("title") or data.get("name") or "").strip()
+        force_full = bool(data.get("force_full"))
         if not book_name:
             self._send_json({"error": "book_name required"}, 400)
             return
@@ -505,7 +506,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             if start_response is None:
                 worker = threading.Thread(
                     target=self._generate_knowledge_async,
-                    args=(book_dir,),
+                    args=(book_dir, force_full),
                     daemon=True,
                 )
                 with self._progress_lock:
@@ -525,7 +526,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
 
         self._send_json({"status": "started", "book_dir": str(book_dir), "book_name": book_name})
 
-    def _generate_knowledge_async(self, book_dir: Path):
+    def _generate_knowledge_async(self, book_dir: Path, force_full: bool = False):
         try:
             from core.agent_grain_processor import generate_agent_knowledge
 
@@ -535,6 +536,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                     pct = 0
                 elif phase == "processing_chapter":
                     pct = 5 + int((cur / max(total, 1)) * 90)
+                elif phase == "skipped_chapters":
+                    pct = 92
                 elif phase == "generating_graph":
                     pct = 97
                 elif phase == "completed":
@@ -548,7 +551,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                     }
                 )
 
-            result = generate_agent_knowledge(book_dir, progress_callback=on_prog)
+            result = generate_agent_knowledge(book_dir, force_full=force_full, progress_callback=on_prog)
             self._set_progress(
                 {
                     "status": "knowledge_completed",

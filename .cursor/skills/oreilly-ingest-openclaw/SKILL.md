@@ -25,6 +25,22 @@ This skill teaches an agent (OpenClaw) how to use the `oreilly-ingest` local web
   - progress poll: every 1–3 seconds for UI-like, or 3–10 seconds for batch
   - cookie/auth check: every 10 minutes
 
+## Restarting the oreilly-ingest server (use scripts/)
+
+Use this when the API becomes unresponsive, when cookies were updated, or after code changes.
+
+### Docker (recommended)
+
+From the repo root:
+
+```bash
+./scripts/start-docker.sh
+```
+
+### Verify it is up
+
+- `GET /api/status` should return JSON (HTTP 200 or an auth-related status payload).
+
 ## APIs (oreilly-ingest server)
 
 ### Search (raw proxy)

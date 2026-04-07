@@ -97,38 +97,43 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        if path == "/api/status":
-            self._handle_status()
-        elif path == "/api/search":
-            params = parse_qs(parsed.query)
-            query = params.get("q", params.get("query", [""]))[0]
-            self._handle_search(query)
-        elif path == "/api/oreilly/search":
-            params = parse_qs(parsed.query)
-            self._handle_oreilly_search_proxy(params)
-        elif match := re.match(r"/api/book/([^/]+)/chapters$", path):
-            self._handle_chapters_list(match.group(1))
-        elif match := re.match(r"/api/book/([^/]+)$", path):
-            self._handle_book_info(match.group(1))
-        elif path == "/api/progress":
-            self._handle_progress()
-        elif path == "/api/settings":
-            self._handle_get_settings()
-        elif path == "/api/cookies":
-            self._handle_get_cookies()
-        elif path == "/api/formats":
-            self._handle_formats()
-        elif path == "/api/downloads":
-            params = parse_qs(parsed.query)
-            self._handle_downloads_list(params)
-        elif path == "/api/downloads/by-id":
-            params = parse_qs(parsed.query)
-            self._handle_download_by_id(params)
-        elif path == "/api/agent_knowledge":
-            params = parse_qs(parsed.query)
-            self._handle_agent_knowledge_get(params)
-        else:
-            super().do_GET()
+        try:
+            if path == "/api/status":
+                self._handle_status()
+            elif path == "/api/search":
+                params = parse_qs(parsed.query)
+                query = params.get("q", params.get("query", [""]))[0]
+                self._handle_search(query)
+            elif path == "/api/oreilly/search":
+                params = parse_qs(parsed.query)
+                self._handle_oreilly_search_proxy(params)
+            elif match := re.match(r"/api/book/([^/]+)/chapters$", path):
+                self._handle_chapters_list(match.group(1))
+            elif match := re.match(r"/api/book/([^/]+)$", path):
+                self._handle_book_info(match.group(1))
+            elif path == "/api/progress":
+                self._handle_progress()
+            elif path == "/api/settings":
+                self._handle_get_settings()
+            elif path == "/api/cookies":
+                self._handle_get_cookies()
+            elif path == "/api/formats":
+                self._handle_formats()
+            elif path == "/api/downloads":
+                params = parse_qs(parsed.query)
+                self._handle_downloads_list(params)
+            elif path == "/api/downloads/by-id":
+                params = parse_qs(parsed.query)
+                self._handle_download_by_id(params)
+            elif path == "/api/agent_knowledge":
+                params = parse_qs(parsed.query)
+                self._handle_agent_knowledge_get(params)
+            else:
+                super().do_GET()
+        except Exception:
+            # Ensure errors are visible in logs and the client gets JSON.
+            LOGGER.exception("unhandled_exception method=%s path=%s", self.command, path)
+            self._send_json({"error": "Internal server error"}, 500)
 
         if path.startswith("/api/"):
             self._log_api_request()
@@ -140,24 +145,28 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         body = self.rfile.read(content_length).decode("utf-8")
         data = json.loads(body) if body else {}
 
-        if post_path == "/api/download":
-            self._handle_download(data)
-        elif post_path == "/api/generate_knowledge":
-            self._handle_generate_knowledge(data)
-        elif post_path == "/api/knowledge-stats":
-            self._handle_knowledge_stats(data)
-        elif post_path == "/api/kg/save":
-            self._handle_kg_save(data)
-        elif post_path in ("/api/cookies", "/api/settings/cookies"):
-            self._handle_cookies(data)
-        elif post_path == "/api/cancel":
-            self._handle_cancel()
-        elif post_path == "/api/reveal":
-            self._handle_reveal(data)
-        elif post_path == "/api/settings/output-dir":
-            self._handle_set_output_dir(data)
-        else:
-            self._send_json({"error": "Not found"}, 404)
+        try:
+            if post_path == "/api/download":
+                self._handle_download(data)
+            elif post_path == "/api/generate_knowledge":
+                self._handle_generate_knowledge(data)
+            elif post_path == "/api/knowledge-stats":
+                self._handle_knowledge_stats(data)
+            elif post_path == "/api/kg/save":
+                self._handle_kg_save(data)
+            elif post_path in ("/api/cookies", "/api/settings/cookies"):
+                self._handle_cookies(data)
+            elif post_path == "/api/cancel":
+                self._handle_cancel()
+            elif post_path == "/api/reveal":
+                self._handle_reveal(data)
+            elif post_path == "/api/settings/output-dir":
+                self._handle_set_output_dir(data)
+            else:
+                self._send_json({"error": "Not found"}, 404)
+        except Exception:
+            LOGGER.exception("unhandled_exception method=%s path=%s", self.command, post_path)
+            self._send_json({"error": "Internal server error"}, 500)
 
         if post_path.startswith("/api/"):
             self._log_api_request()
@@ -1001,6 +1010,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
     def _send_json(self, data: dict, status: int = 200):
         # 必须带 Content-Length：HTTP/1.1 keep-alive 下否则浏览器无法判定 body 结束，
         # 会出现 DevTools Preview 空、fetch().text() 一直挂起等问题。
+        if status >= 400:
+            self._log_api_error_response(data, status)
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1009,6 +1020,33 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
         self.wfile.flush()
+
+    def _log_api_error_response(self, data: dict, status: int):
+        """Log error responses in a machine-readable way."""
+        try:
+            parsed = urlparse(self.path)
+            client_ip = getattr(self, "client_address", ("", 0))[0]
+            err = None
+            msg = None
+            if isinstance(data, dict):
+                err = data.get("error")
+                msg = data.get("message")
+            elapsed_ms = 0
+            if self._request_start_ts is not None:
+                elapsed_ms = int((time.time() - self._request_start_ts) * 1000)
+            LOGGER.warning(
+                "api_error method=%s path=%s query=%s status=%s elapsed_ms=%s ip=%s error=%r message=%r",
+                self.command,
+                parsed.path,
+                parsed.query,
+                status,
+                elapsed_ms,
+                client_ip,
+                err,
+                msg,
+            )
+        except Exception:
+            pass
 
     def log_message(self, format, *args):
         # Route default http.server logs into our logger.

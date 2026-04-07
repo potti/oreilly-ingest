@@ -47,20 +47,30 @@ def _call_ollama(
     return text
 
 
-def _extract_json_object(raw: str) -> str:
-    """Best-effort: pull the first JSON object from a raw model response."""
+def _parse_first_json_object(raw: str) -> dict:
+    """Parse the first top-level JSON object; ignore trailing text after a valid object.
+
+    Fixes ``json.loads`` raising ``JSONDecodeError: Extra data`` when the model outputs
+    two JSON objects back-to-back, or JSON followed by prose — ``rfind('}')`` would
+    include multiple roots and ``json.loads`` would fail after the first value.
+    """
     s = (raw or "").strip()
     if not s:
-        return s
-    # Common case: model already returns pure JSON
-    if s.startswith("{") and s.endswith("}"):
-        return s
-    # Fallback: find first '{' and last '}' and parse that slice
-    start = s.find("{")
-    end = s.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        return s[start : end + 1]
-    return s
+        raise ValueError("Empty response")
+    if s.startswith("```"):
+        first_nl = s.find("\n", 1)
+        if first_nl != -1:
+            s = s[first_nl + 1 :].strip()
+        if "```" in s:
+            s = s[: s.rfind("```")].strip()
+    i = s.find("{")
+    if i == -1:
+        raise ValueError("No JSON object start")
+    decoder = json.JSONDecoder()
+    obj, _end = decoder.raw_decode(s, i)
+    if not isinstance(obj, dict):
+        raise ValueError("Expected a JSON object at root")
+    return obj
 
 
 # Property graph: relations must be chosen from this set (prompt + post-filter).
@@ -104,6 +114,7 @@ def generate_kg_edges(
     ollama_url: str,
     model: str,
     timeout_seconds: int,
+    llm_response_debug_path: Path | None = None,
 ) -> dict:
     """Extract a property-graph style KG from full agent_knowledge JSON (Ollama / gemma-friendly prompt)."""
     meta_in = full_json.get("metadata") if isinstance(full_json.get("metadata"), dict) else {}
@@ -161,7 +172,13 @@ JSON内容：
         result = _call_ollama(
             prompt, ollama_url=ollama_url, model=model, timeout_seconds=timeout_seconds
         )
-        kg = json.loads(_extract_json_object(result.strip()))
+        if llm_response_debug_path is not None:
+            try:
+                llm_response_debug_path.parent.mkdir(parents=True, exist_ok=True)
+                llm_response_debug_path.write_text(result, encoding="utf-8")
+            except OSError:
+                pass
+        kg = _parse_first_json_object(result)
     except Exception as e:
         return _empty_kg(str(e))
 
@@ -478,7 +495,7 @@ def generate_agent_knowledge(
                     prompt, ollama_url=ollama_url, model=model, timeout_seconds=timeout_seconds
                 )
                 (debug_dir / f"chapter_{idx:03d}_raw.txt").write_text(result, encoding="utf-8")
-                chapter_json = json.loads(_extract_json_object(result))
+                chapter_json = _parse_first_json_object(result)
                 full_json["chapters"][key] = chapter_json
             except Exception as e:
                 err_txt = f"{type(e).__name__}: {e}"
@@ -503,10 +520,13 @@ def generate_agent_knowledge(
             ollama_url=ollama_url,
             model=model,
             timeout_seconds=timeout_seconds,
+            llm_response_debug_path=debug_dir / "graph_raw.txt",
         )
         try:
-            gr = json.dumps(kg, ensure_ascii=False, indent=2)
-            (debug_dir / "graph_raw.txt").write_text(gr, encoding="utf-8")
+            (debug_dir / "graph_normalized.json").write_text(
+                json.dumps(kg, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         except OSError:
             pass
         kg_path.write_text(json.dumps(kg, ensure_ascii=False, indent=2), encoding="utf-8")

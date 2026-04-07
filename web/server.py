@@ -83,6 +83,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             self._handle_download(data)
         elif post_path == "/api/generate_knowledge":
             self._handle_generate_knowledge(data)
+        elif post_path == "/api/knowledge-stats":
+            self._handle_knowledge_stats(data)
         elif post_path in ("/api/cookies", "/api/settings/cookies"):
             self._handle_cookies(data)
         elif post_path == "/api/cancel":
@@ -525,6 +527,38 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             return
 
         self._send_json({"status": "started", "book_dir": str(book_dir), "book_name": book_name})
+
+    def _handle_knowledge_stats(self, data: dict):
+        """Return failure counts from Knowledge/agent_knowledge.json for a downloaded book.
+
+        Body: {"book_name": "<folder_name or title>", "output_dir": "...?"}
+        """
+        book_name = (data.get("book_name") or data.get("title") or data.get("name") or "").strip()
+        if not book_name:
+            self._send_json({"error": "book_name required"}, 400)
+            return
+
+        output_plugin = self.kernel["output"]
+        out_dir_str = (data.get("output_dir") or "").strip()
+        if out_dir_str:
+            ok, msg, out_dir = output_plugin.validate_dir(out_dir_str)
+            if not ok or out_dir is None:
+                self._send_json({"error": msg}, 400)
+                return
+        else:
+            out_dir = output_plugin.get_default_dir()
+
+        book_dir = self._resolve_book_dir_by_name(book_name, out_dir)
+        if book_dir is None:
+            self._send_json({"error": f"Book directory not found under output: {book_name}"}, 404)
+            return
+
+        from core.agent_grain_processor import knowledge_stats_for_book
+
+        stats = knowledge_stats_for_book(book_dir)
+        stats["book_dir"] = str(book_dir.resolve())
+        stats["book_name"] = book_name
+        self._send_json(stats)
 
     def _generate_knowledge_async(self, book_dir: Path, force_full: bool = False):
         try:

@@ -96,6 +96,65 @@ def _chapter_succeeded(entry: dict | None) -> bool:
     return True
 
 
+def knowledge_stats_for_book(book_dir: Path) -> dict:
+    """Summarize agent_knowledge.json: how many chapter entries look failed vs total."""
+    book_dir = book_dir.resolve()
+    agent_path = book_dir / "Knowledge" / "agent_knowledge.json"
+    if not agent_path.is_file():
+        return {
+            "exists": False,
+            "path": str(agent_path),
+            "error_count": None,
+            "chapter_count": 0,
+            "failed_chapter_keys": [],
+            "message": "尚未生成 Knowledge/agent_knowledge.json",
+        }
+    try:
+        raw_data = json.loads(agent_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return {
+            "exists": True,
+            "path": str(agent_path),
+            "error_count": None,
+            "chapter_count": 0,
+            "failed_chapter_keys": [],
+            "message": f"无法解析 JSON: {e}",
+            "parse_error": True,
+        }
+    if not isinstance(raw_data, dict):
+        return {
+            "exists": True,
+            "path": str(agent_path),
+            "error_count": None,
+            "chapter_count": 0,
+            "failed_chapter_keys": [],
+            "message": "根节点不是对象",
+            "parse_error": True,
+        }
+    chapters = _normalize_chapter_keys(raw_data.get("chapters") or {})
+
+    def _sort_key(k: str) -> int:
+        if k.startswith("chapter_"):
+            try:
+                return int(k[len("chapter_") :])
+            except ValueError:
+                pass
+        return 0
+
+    failed_keys = sorted(
+        [k for k, v in chapters.items() if not _chapter_succeeded(v)],
+        key=_sort_key,
+    )
+    return {
+        "exists": True,
+        "path": str(agent_path),
+        "error_count": len(failed_keys),
+        "chapter_count": len(chapters),
+        "failed_chapter_keys": failed_keys,
+        "message": "",
+    }
+
+
 def iter_chapters_from_oebps(book_dir: Path) -> Iterator[tuple[str, str]]:
     """Yield (chapter_title, plain_text) from downloaded book directory.
 

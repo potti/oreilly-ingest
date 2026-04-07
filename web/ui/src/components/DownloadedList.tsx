@@ -10,12 +10,28 @@ type Props = {
     outputDir: string;
 };
 
+type KnowledgeStatsPayload = {
+    exists?: boolean;
+    path?: string;
+    error_count?: number | null;
+    chapter_count?: number;
+    failed_chapter_keys?: string[];
+    message?: string;
+    parse_error?: boolean;
+    book_dir?: string;
+    book_name?: string;
+    error?: string;
+};
+
 export function DownloadedList({ outputDir }: Props) {
     const [page, setPage] = useState(1);
     const [data, setData] = useState<DownloadListResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [revealBusy, setRevealBusy] = useState<string | null>(null);
+    const [statsBusy, setStatsBusy] = useState<string | null>(null);
+    const [knowledgeStatsByPath, setKnowledgeStatsByPath] = useState<Record<string, KnowledgeStatsPayload>>(
+        {},
+    );
     const [knowledgeBusy, setKnowledgeBusy] = useState<string | null>(null);
     const [knowledgeProgress, setKnowledgeProgress] = useState<{
         status?: string;
@@ -128,34 +144,61 @@ export function DownloadedList({ outputDir }: Props) {
         };
     }, [knowledgeBusy]);
 
-    const revealFolder = useCallback(async (item: DownloadListItem) => {
-        setRevealBusy(item.path);
-        try {
-            const res = await fetch(`${API}/api/reveal`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: item.path }),
-            });
-            const raw = await res.text();
-            let body: { error?: string; success?: boolean } = {};
+    const fetchKnowledgeStats = useCallback(
+        async (item: DownloadListItem) => {
+            setStatsBusy(item.path);
             try {
-                body = raw ? JSON.parse(raw) : {};
-            } catch {
-                /* ignore */
-            }
-            if (!res.ok || !body.success) {
-                logApiOffPath('POST /api/reveal', '打开文件夹失败', {
-                    status: res.status,
-                    path: item.path,
-                    bodyPreview: previewText(raw),
+                const body: { book_name: string; output_dir?: string } = { book_name: item.folder_name };
+                const trimmed = outputDir.trim();
+                if (trimmed) body.output_dir = trimmed;
+                const res = await fetch(`${API}/api/knowledge-stats`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
                 });
+                const raw = await res.text();
+                let parsed: KnowledgeStatsPayload = {};
+                try {
+                    parsed = raw ? (JSON.parse(raw) as KnowledgeStatsPayload) : {};
+                } catch (parseErr) {
+                    logApiOffPath('POST /api/knowledge-stats', '响应不是合法 JSON', {
+                        status: res.status,
+                        bodyPreview: previewText(raw),
+                        parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+                    });
+                    setKnowledgeStatsByPath((prev) => ({
+                        ...prev,
+                        [item.path]: { message: '无法解析服务端响应' },
+                    }));
+                    return;
+                }
+                if (!res.ok) {
+                    logApiOffPath('POST /api/knowledge-stats', 'HTTP 非 2xx', {
+                        status: res.status,
+                        book_name: item.folder_name,
+                        bodyPreview: previewText(raw),
+                    });
+                    setKnowledgeStatsByPath((prev) => ({
+                        ...prev,
+                        [item.path]: {
+                            message: typeof parsed.error === 'string' ? parsed.error : `HTTP ${res.status}`,
+                        },
+                    }));
+                    return;
+                }
+                setKnowledgeStatsByPath((prev) => ({ ...prev, [item.path]: parsed }));
+            } catch (err) {
+                logErrorDetail('knowledge-stats failed', err);
+                setKnowledgeStatsByPath((prev) => ({
+                    ...prev,
+                    [item.path]: { message: err instanceof Error ? err.message : String(err) },
+                }));
+            } finally {
+                setStatsBusy(null);
             }
-        } catch (err) {
-            logErrorDetail('reveal folder failed', err);
-        } finally {
-            setRevealBusy(null);
-        }
-    }, []);
+        },
+        [outputDir],
+    );
 
     const generateKnowledge = useCallback(
         async (item: DownloadListItem) => {
@@ -245,7 +288,30 @@ export function DownloadedList({ outputDir }: Props) {
             {!loading && !error && total > 0 && data && (
                 <>
                     <ul className="divide-y divide-zinc-200 border border-zinc-200 rounded-lg bg-white overflow-hidden">
-                        {data.items.map((item) => (
+                        {data.items.map((item) => {
+                            const st = knowledgeStatsByPath[item.path];
+                            const statsLine = (() => {
+                                if (!st) return null;
+                                if (st.message && !st.exists && st.error_count == null) {
+                                    return (
+                                        <span className="text-zinc-500">{st.message}</span>
+                                    );
+                                }
+                                if (st.parse_error || (st.message && st.error_count == null && st.exists)) {
+                                    return <span className="text-amber-700">{st.message || '统计不可用'}</span>;
+                                }
+                                if (st.exists && typeof st.error_count === 'number' && typeof st.chapter_count === 'number') {
+                                    return (
+                                        <span className={st.error_count > 0 ? 'text-red-600' : 'text-emerald-700'}>
+                                            agent_knowledge.json：失败 {st.error_count} / 共 {st.chapter_count} 章
+                                        </span>
+                                    );
+                                }
+                                return st.message ? (
+                                    <span className="text-zinc-600">{st.message}</span>
+                                ) : null;
+                            })();
+                            return (
                             <li
                                 key={`${item.path}-${item.modified_at}`}
                                 className="px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 hover:bg-zinc-50/80 transition-colors"
@@ -263,7 +329,8 @@ export function DownloadedList({ outputDir }: Props) {
                                         <span>{fmtTime(item.modified_at)}</span>
                                     </div>
                                 </div>
-                                <div className="shrink-0 self-start sm:self-center flex items-center gap-2">
+                                <div className="shrink-0 self-start sm:self-center flex flex-col items-stretch sm:items-end gap-1">
+                                <div className="flex items-center gap-2">
                                     <button
                                         type="button"
                                         disabled={knowledgeBusy === item.path}
@@ -276,15 +343,20 @@ export function DownloadedList({ outputDir }: Props) {
                                     </button>
                                     <button
                                         type="button"
-                                        disabled={revealBusy === item.path}
-                                        onClick={() => void revealFolder(item)}
+                                        disabled={statsBusy === item.path}
+                                        onClick={() => void fetchKnowledgeStats(item)}
                                         className="px-3 py-1.5 text-xs font-medium text-oreilly-blue border border-oreilly-blue/30 rounded-lg hover:bg-oreilly-blue/5 disabled:opacity-50 transition-colors"
                                     >
-                                        {revealBusy === item.path ? '打开中…' : '在文件夹中显示'}
+                                        {statsBusy === item.path ? '统计中…' : '知识错误统计'}
                                     </button>
                                 </div>
+                                {statsLine && (
+                                    <p className="text-xs text-left sm:text-right max-w-md break-words">{statsLine}</p>
+                                )}
+                                </div>
                             </li>
-                        ))}
+                            );
+                        })}
                     </ul>
                     <div className="flex items-center justify-between mt-4 gap-3">
                         <p className="text-xs text-zinc-500">

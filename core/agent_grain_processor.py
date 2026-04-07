@@ -63,6 +63,203 @@ def _extract_json_object(raw: str) -> str:
     return s
 
 
+# Property graph: relations must be chosen from this set (prompt + post-filter).
+KG_ALLOWED_RELATIONS = frozenset(
+    {
+        "uses",
+        "requires",
+        "enables",
+        "improves",
+        "coordinates",
+        "feeds_into",
+        "consists_of",
+        "superior_to",
+        "combines",
+        "detects",
+        "measures",
+        "extends",
+        "critical_for",
+        "stores_in",
+    }
+)
+
+KG_NODE_TYPES = frozenset(
+    {
+        "Core_Concept",
+        "Agent_Type",
+        "Component",
+        "Technique",
+        "Production",
+    }
+)
+
+KG_MAX_NODES = 30
+KG_MAX_EDGES = 50
+KG_JSON_PREVIEW_CHARS = 12000
+
+
+def generate_kg_edges(
+    full_json: dict,
+    *,
+    ollama_url: str,
+    model: str,
+    timeout_seconds: int,
+) -> dict:
+    """Extract a property-graph style KG from full agent_knowledge JSON (Ollama / gemma-friendly prompt)."""
+    meta_in = full_json.get("metadata") if isinstance(full_json.get("metadata"), dict) else {}
+    source_label = str(meta_in.get("book_dir") or meta_in.get("source") or "O'Reilly")
+    generated_day = _utc_now_iso()[:10]
+
+    payload_preview = json.dumps(full_json, ensure_ascii=False, indent=2)[:KG_JSON_PREVIEW_CHARS]
+
+    prompt = f"""
+你现在是一个知识图谱专家。请严格根据下面整本书的Agent JSON，提取高质量的Property Graph。
+只输出纯JSON，不要任何解释、markdown或额外文字。
+
+JSON内容：
+{payload_preview}
+
+要求：
+1. 节点（nodes）最多{KG_MAX_NODES}个，优先提取核心概念、Agent类型、组件、技术。
+2. 关系（edges）最多{KG_MAX_EDGES}条，使用以下固定关系词汇（必须从下面选）：
+   - uses, requires, enables, improves, coordinates, feeds_into, consists_of, superior_to, combines, detects, measures, extends, critical_for, stores_in
+3. 每条边必须包含 source_chapter 字段（例如 "chapter_5"）。
+4. 节点必须有 id、label、type 三个字段；type 必须是以下之一：
+   Core_Concept, Agent_Type, Component, Technique, Production
+
+输出格式必须严格如下：
+{{
+  "metadata": {{
+    "source": "{source_label}",
+    "generated_at": "{generated_day}",
+    "total_nodes": 0,
+    "total_edges": 0
+  }},
+  "nodes": [
+    {{"id": "节点ID", "label": "显示名称", "type": "Core_Concept"}}
+  ],
+  "edges": [
+    {{"source": "节点A_id", "relation": "uses", "target": "节点B_id", "source_chapter": "chapter_5"}}
+  ]
+}}
+"""
+
+    def _empty_kg(err: str) -> dict:
+        return {
+            "metadata": {
+                "source": source_label,
+                "generated_at": generated_day,
+                "total_nodes": 0,
+                "total_edges": 0,
+                "error": err,
+            },
+            "nodes": [],
+            "edges": [],
+        }
+
+    try:
+        result = _call_ollama(
+            prompt, ollama_url=ollama_url, model=model, timeout_seconds=timeout_seconds
+        )
+        kg = json.loads(_extract_json_object(result.strip()))
+    except Exception as e:
+        return _empty_kg(str(e))
+
+    if not isinstance(kg, dict):
+        return _empty_kg("parsed payload is not a JSON object")
+
+    raw_nodes = kg.get("nodes")
+    raw_edges = kg.get("edges")
+    if not isinstance(raw_nodes, list):
+        raw_nodes = []
+    if not isinstance(raw_edges, list):
+        raw_edges = []
+
+    seen_ids: set[str] = set()
+    unique_nodes: list[dict] = []
+    for node in raw_nodes:
+        if not isinstance(node, dict):
+            continue
+        nid = node.get("id")
+        if nid is None or (isinstance(nid, str) and not nid.strip()):
+            continue
+        nid_s = str(nid).strip()
+        if nid_s in seen_ids:
+            continue
+        seen_ids.add(nid_s)
+        label = node.get("label")
+        ntype = node.get("type")
+        if not isinstance(label, str) or not label.strip():
+            label = nid_s
+        if not isinstance(ntype, str) or ntype not in KG_NODE_TYPES:
+            ntype = "Core_Concept"
+        unique_nodes.append({"id": nid_s, "label": label.strip(), "type": ntype})
+        if len(unique_nodes) >= KG_MAX_NODES:
+            break
+
+    node_ids = {n["id"] for n in unique_nodes}
+    valid_edges: list[dict] = []
+    for e in raw_edges:
+        if not isinstance(e, dict):
+            continue
+        rel = e.get("relation")
+        if not isinstance(rel, str) or rel not in KG_ALLOWED_RELATIONS:
+            continue
+        src, tgt = e.get("source"), e.get("target")
+        if not isinstance(src, str) or not isinstance(tgt, str):
+            continue
+        src, tgt = src.strip(), tgt.strip()
+        if src not in node_ids or tgt not in node_ids:
+            continue
+        sc = e.get("source_chapter")
+        if not isinstance(sc, str) or not sc.strip().startswith("chapter_"):
+            continue
+        valid_edges.append(
+            {
+                "source": src,
+                "relation": rel,
+                "target": tgt,
+                "source_chapter": sc.strip(),
+            }
+        )
+        if len(valid_edges) >= KG_MAX_EDGES:
+            break
+
+    md = kg.get("metadata") if isinstance(kg.get("metadata"), dict) else {}
+    md = {
+        "source": str(md.get("source") or source_label),
+        "generated_at": str(md.get("generated_at") or generated_day),
+        "total_nodes": len(unique_nodes),
+        "total_edges": len(valid_edges),
+    }
+    if "model_used" in meta_in:
+        md["model_used"] = meta_in["model_used"]
+
+    return {"metadata": md, "nodes": unique_nodes, "edges": valid_edges}
+
+
+def _kg_graph_needs_generation(kg_path: Path) -> bool:
+    """True if kg_graph.json is missing, unreadable, or has no nodes and no edges."""
+    if not kg_path.is_file():
+        return True
+    try:
+        raw = kg_path.read_text(encoding="utf-8").strip()
+        if not raw:
+            return True
+        data = json.loads(raw)
+    except (json.JSONDecodeError, OSError):
+        return True
+    if not isinstance(data, dict):
+        return True
+    nodes = data.get("nodes")
+    edges = data.get("edges")
+    n = len(nodes) if isinstance(nodes, list) else 0
+    e = len(edges) if isinstance(edges, list) else 0
+    if n == 0 and e == 0:
+        return True
+    return False
+
+
 def _chapter_key(idx: int) -> str:
     return f"chapter_{idx}"
 
@@ -298,26 +495,20 @@ def generate_agent_knowledge(
     agent_path.write_text(json.dumps(full_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
     kg_path = out_dir / "kg_graph.json"
-    need_graph = n_todo > 0 or force_full or not kg_path.is_file()
+    need_graph = n_todo > 0 or force_full or _kg_graph_needs_generation(kg_path)
     if need_graph:
         report("generating_graph", total, total)
-        graph_prompt = (
-            "根据下面整本书的Agent JSON，提取知识图谱（聚焦AI Agent核心概念）。\n"
-            f"{json.dumps(full_json, ensure_ascii=False)[:8000]}\n"
-            "输出纯JSON：\n"
-            "{\n"
-            "  \"nodes\": [\"节点1\", \"节点2\", ...],\n"
-            "  \"edges\": [[\"节点A\", \"关系\", \"节点B\"], ...]\n"
-            "}"
+        kg = generate_kg_edges(
+            full_json,
+            ollama_url=ollama_url,
+            model=model,
+            timeout_seconds=timeout_seconds,
         )
         try:
-            graph_raw = _call_ollama(
-                graph_prompt, ollama_url=ollama_url, model=model, timeout_seconds=timeout_seconds
-            )
-            (debug_dir / "graph_raw.txt").write_text(graph_raw, encoding="utf-8")
-            kg = json.loads(_extract_json_object(graph_raw))
-        except Exception:
-            kg = {"nodes": [], "edges": []}
+            gr = json.dumps(kg, ensure_ascii=False, indent=2)
+            (debug_dir / "graph_raw.txt").write_text(gr, encoding="utf-8")
+        except OSError:
+            pass
         kg_path.write_text(json.dumps(kg, ensure_ascii=False, indent=2), encoding="utf-8")
 
     report("completed", total, total)

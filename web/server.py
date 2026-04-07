@@ -86,6 +86,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         self.static_dir = Path(__file__).parent / "static"
         self._last_status_code: int | None = None
         self._request_start_ts: float | None = None
+        self._last_json_response: dict | None = None
+        self._last_json_status: int | None = None
         super().__init__(*args, directory=str(self.static_dir), **kwargs)
 
     def send_response(self, code, message=None):
@@ -170,6 +172,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
 
         if post_path.startswith("/api/"):
             self._log_api_request()
+            if post_path == "/api/generate_knowledge":
+                self._log_generate_knowledge_response()
 
     def _log_api_request(self):
         try:
@@ -1010,6 +1014,10 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
     def _send_json(self, data: dict, status: int = 200):
         # 必须带 Content-Length：HTTP/1.1 keep-alive 下否则浏览器无法判定 body 结束，
         # 会出现 DevTools Preview 空、fetch().text() 一直挂起等问题。
+        # Keep a copy for endpoint-specific logging (best-effort, in-memory only).
+        if isinstance(data, dict):
+            self._last_json_response = data
+            self._last_json_status = int(status)
         if status >= 400:
             self._log_api_error_response(data, status)
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -1020,6 +1028,36 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
         self.wfile.flush()
+
+    def _log_generate_knowledge_response(self):
+        """Always log generate_knowledge response payload (success or failure)."""
+        try:
+            parsed = urlparse(self.path)
+            client_ip = getattr(self, "client_address", ("", 0))[0]
+            elapsed_ms = 0
+            if self._request_start_ts is not None:
+                elapsed_ms = int((time.time() - self._request_start_ts) * 1000)
+
+            payload = self._last_json_response if isinstance(self._last_json_response, dict) else {}
+            status = self._last_json_status if self._last_json_status is not None else self._last_status_code
+
+            # Truncate to avoid huge logs.
+            raw = json.dumps(payload, ensure_ascii=False)
+            max_chars = int(os.getenv("OREILLY_INGEST_LOG_RESPONSE_MAX_CHARS", "4000"))
+            if len(raw) > max_chars:
+                raw = raw[:max_chars] + "...(truncated)"
+
+            LOGGER.info(
+                "generate_knowledge_response path=%s query=%s status=%s elapsed_ms=%s ip=%s body=%s",
+                parsed.path,
+                parsed.query,
+                status,
+                elapsed_ms,
+                client_ip,
+                raw,
+            )
+        except Exception:
+            pass
 
     def _log_api_error_response(self, data: dict, status: int):
         """Log error responses in a machine-readable way."""

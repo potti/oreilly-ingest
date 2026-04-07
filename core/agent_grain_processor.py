@@ -17,6 +17,14 @@ DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "gemma4-fast")
 # 客户端 read timeout；若经 Nginx，需保证 proxy_read_timeout / send_timeout 大于此值，否则会先被网关断开
 DEFAULT_OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "600"))
 
+DEFAULT_MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
+DEFAULT_MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-M2.7")
+DEFAULT_MINIMAX_TIMEOUT = int(os.getenv("MINIMAX_TIMEOUT_SECONDS", str(DEFAULT_OLLAMA_TIMEOUT)))
+DEFAULT_MINIMAX_GROUP_ID = os.getenv("MINIMAX_GROUP_ID", "2037111515714167249").strip()
+DEFAULT_MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "sk-api-ul9f6wMucqizUfPJdY8VAVnSBD42imN1pme-fIg9VKh6VErB77yWObIcLr39C39GyQrrpPGWcIHtzh5CW0zrAkqsZGF7rsHsbQnGXksvii4MQi8dOaXyNco").strip()
+
+# 子账号：oreilly@2037111515714167249
+# 密码：42b29f4788
 
 def _utc_now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
@@ -44,6 +52,57 @@ def _call_ollama(
     text = str(payload["response"])
     if text.strip() == "":
         raise ValueError("Empty Ollama response")
+    return text
+
+
+def _call_minimax_codeplan(
+    prompt: str,
+    *,
+    base_url: str = DEFAULT_MINIMAX_BASE_URL,
+    model: str = DEFAULT_MINIMAX_MODEL,
+    timeout_seconds: int = DEFAULT_MINIMAX_TIMEOUT,
+    api_key: str | None = None,
+    group_id: str | None = None,
+) -> str:
+    """Call MiniMax (OpenAI-compatible) chat completions API.
+
+    We use MiniMax for graph generation to avoid local LLM dependency.
+    """
+    key = (api_key or DEFAULT_MINIMAX_API_KEY).strip()
+    if not key:
+        raise ValueError("MINIMAX_API_KEY is required")
+
+    gid = (group_id if group_id is not None else DEFAULT_MINIMAX_GROUP_ID).strip()
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    if gid:
+        # Some MiniMax accounts require GroupId query parameter.
+        url = f"{url}?GroupId={gid}"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are MiniMax CodePlan. Follow instructions precisely and output only the requested JSON.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+    }
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    resp = requests.post(url, json=payload, headers=headers, timeout=timeout_seconds)
+    resp.raise_for_status()
+    data = resp.json()
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except Exception as e:
+        raise ValueError(f"Invalid MiniMax response payload: {e}") from e
+    text = str(content or "")
+    if text.strip() == "":
+        raise ValueError("Empty MiniMax response")
     return text
 
 
@@ -116,7 +175,7 @@ def generate_kg_edges(
     timeout_seconds: int,
     llm_response_debug_path: Path | None = None,
 ) -> dict:
-    """Extract a property-graph style KG from full agent_knowledge JSON (Ollama / gemma-friendly prompt)."""
+    """Extract a property-graph style KG from full agent_knowledge JSON (MiniMax CodePlan prompt)."""
     meta_in = full_json.get("metadata") if isinstance(full_json.get("metadata"), dict) else {}
     source_label = str(meta_in.get("book_dir") or meta_in.get("source") or "O'Reilly")
     generated_day = _utc_now_iso()[:10]
@@ -169,8 +228,13 @@ JSON内容：
         }
 
     try:
-        result = _call_ollama(
-            prompt, ollama_url=ollama_url, model=model, timeout_seconds=timeout_seconds
+        # NOTE: graph generation must not depend on local LLM; use MiniMax.
+        # Keep function signature stable for callers; `ollama_url` is ignored here.
+        result = _call_minimax_codeplan(
+            prompt,
+            base_url=DEFAULT_MINIMAX_BASE_URL,
+            model=DEFAULT_MINIMAX_MODEL,
+            timeout_seconds=DEFAULT_MINIMAX_TIMEOUT,
         )
         if llm_response_debug_path is not None:
             try:

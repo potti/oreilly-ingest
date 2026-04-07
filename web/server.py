@@ -73,6 +73,9 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         elif path == "/api/downloads":
             params = parse_qs(parsed.query)
             self._handle_downloads_list(params)
+        elif path == "/api/downloads/by-id":
+            params = parse_qs(parsed.query)
+            self._handle_download_by_id(params)
         elif path == "/api/agent_knowledge":
             params = parse_qs(parsed.query)
             self._handle_agent_knowledge_get(params)
@@ -91,6 +94,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             self._handle_generate_knowledge(data)
         elif post_path == "/api/knowledge-stats":
             self._handle_knowledge_stats(data)
+        elif post_path == "/api/kg/save":
+            self._handle_kg_save(data)
         elif post_path in ("/api/cookies", "/api/settings/cookies"):
             self._handle_cookies(data)
         elif post_path == "/api/cancel":
@@ -282,6 +287,76 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                 "page_size": page_size,
                 "total": total,
                 "output_dir": str(root),
+            }
+        )
+
+    def _handle_download_by_id(self, params: dict):
+        """Resolve a downloaded book directory by `book_id` via `.book_id` marker.
+
+        Query: book_id (required), output_dir (optional)
+        """
+        book_id = ((params.get("book_id") or params.get("id") or [""])[0] or "").strip()
+        if not book_id:
+            self._send_json({"error": "book_id required"}, 400)
+            return
+
+        output_plugin = self.kernel["output"]
+        path_param = (params.get("output_dir") or [""])[0].strip()
+        if path_param:
+            ok, msg, root = output_plugin.validate_dir(path_param)
+            if not ok or root is None:
+                self._send_json({"error": msg or "Invalid output directory"}, 400)
+                return
+        else:
+            root = output_plugin.get_default_dir()
+
+        root = root.resolve()
+        if not root.is_dir():
+            self._send_json({"exists": False, "book_id": book_id, "output_dir": str(root)}, 200)
+            return
+
+        matches: list[dict] = []
+        for child in root.iterdir():
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            meta = child / ".book_id"
+            if not meta.is_file():
+                continue
+            try:
+                found_id = meta.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if found_id != book_id:
+                continue
+            try:
+                mtime = child.stat().st_mtime
+            except OSError:
+                mtime = 0
+            matches.append(
+                {
+                    "folder_name": child.name,
+                    "book_id": found_id,
+                    "path": str(child.resolve()),
+                    "modified_at": (
+                        datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat() if mtime else None
+                    ),
+                }
+            )
+
+        if not matches:
+            self._send_json({"exists": False, "book_id": book_id, "output_dir": str(root)}, 200)
+            return
+
+        # Most recent first
+        matches.sort(key=lambda x: x.get("modified_at") or "", reverse=True)
+        self._send_json(
+            {
+                "exists": True,
+                "book_id": book_id,
+                "output_dir": str(root),
+                "matches": matches,
+                "book_dir": matches[0]["path"],
+                "folder_name": matches[0]["folder_name"],
             }
         )
 
@@ -670,6 +745,84 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             return
 
         self._send_json(data)
+
+    def _handle_kg_save(self, data: dict):
+        """Save a Property Graph JSON under <book_dir>/Knowledge/.
+
+        Body:
+          {
+            "book_name": "...",              (required)
+            "output_dir": "...?",            (optional)
+            "graph": { ... },                (required, JSON object)
+            "filename": "kg_graph_openclaw.json", (optional)
+            "overwrite": true                (optional, default true)
+          }
+        """
+        book_name = (data.get("book_name") or data.get("title") or data.get("name") or "").strip()
+        if not book_name:
+            self._send_json({"error": "book_name required"}, 400)
+            return
+
+        graph = data.get("graph")
+        if not isinstance(graph, dict):
+            self._send_json({"error": "graph must be a JSON object"}, 400)
+            return
+
+        filename = str(data.get("filename") or "kg_graph_openclaw.json").strip()
+        if "/" in filename or "\\" in filename or filename in (".", "..") or filename == "":
+            self._send_json({"error": "invalid filename"}, 400)
+            return
+        if not filename.endswith(".json"):
+            filename = filename + ".json"
+
+        overwrite = bool(data.get("overwrite", True))
+
+        output_plugin = self.kernel["output"]
+        out_dir_str = (data.get("output_dir") or "").strip()
+        if out_dir_str:
+            ok, msg, out_dir = output_plugin.validate_dir(out_dir_str)
+            if not ok or out_dir is None:
+                self._send_json({"error": msg}, 400)
+                return
+        else:
+            out_dir = output_plugin.get_default_dir()
+
+        book_dir = self._resolve_book_dir_by_name(book_name, out_dir)
+        if book_dir is None:
+            self._send_json({"error": f"Book directory not found under output: {book_name}"}, 404)
+            return
+
+        knowledge_dir = (book_dir / "Knowledge").resolve()
+        try:
+            knowledge_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self._send_json({"error": str(e), "path": str(knowledge_dir)}, 500)
+            return
+
+        target = (knowledge_dir / filename).resolve()
+        # Ensure path traversal cannot escape Knowledge/
+        if knowledge_dir not in target.parents:
+            self._send_json({"error": "invalid path"}, 400)
+            return
+        if target.exists() and not overwrite:
+            self._send_json({"error": "file exists", "path": str(target)}, 409)
+            return
+
+        try:
+            target.write_text(json.dumps(graph, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as e:
+            self._send_json({"error": str(e), "path": str(target)}, 500)
+            return
+
+        self._send_json(
+            {
+                "success": True,
+                "path": str(target),
+                "book_dir": str(book_dir.resolve()),
+                "book_name": book_name,
+                "filename": filename,
+            }
+        )
 
     def _generate_knowledge_async(self, book_dir: Path, force_full: bool = False):
         try:

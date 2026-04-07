@@ -509,7 +509,8 @@ def generate_agent_knowledge(
     agent_path.write_text(json.dumps(full_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
     kg_path = out_dir / "kg_graph.json"
-    need_graph = n_todo > 0 or force_full or _kg_graph_needs_generation(kg_path)
+    # need_graph = n_todo > 0 or force_full or _kg_graph_needs_generation(kg_path)
+    need_graph = False # 暂时关闭图谱生成 外部LLM
     if need_graph:
         report("generating_graph", total, total)
         kg = generate_kg_edges(

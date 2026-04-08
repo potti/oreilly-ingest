@@ -50,6 +50,26 @@ From the repo root:
   - Returns upstream JSON + status code
   - Supports `q=` alias → `query=`
 
+### Book info & chapters
+
+- `GET /api/book/{book_id}`
+  - Fetches book metadata from O’Reilly via the configured HTTP client (requires valid session/cookies).
+  - Path segment `{book_id}` is the ISBN / archive id (same id you pass to `POST /api/download`).
+  - Returns JSON from `book.fetch(book_id)` on success; `400` with `{ "error": "..." }` on failure.
+
+  **Example**
+
+  `GET /api/book/9781098166298`
+
+- `GET /api/book/{book_id}/chapters`
+  - Returns a normalized chapter list for the chapter-selection UI.
+  - Response shape: `{ "chapters": [ { "index", "title", "pages", "minutes" } ], "total": N }` (`pages` / `minutes` may be null depending on upstream).
+  - `400` with `{ "error": "..." }` if the chapters plugin cannot load the list.
+
+  **Example**
+
+  `GET /api/book/9781098166298/chapters`
+
 ### Downloads list (dedupe)
 
 - `GET /api/downloads?page=1&page_size=10&output_dir=...`
@@ -66,6 +86,22 @@ From the repo root:
 - `POST /api/generate_knowledge`
   - Body: `{ "book_name": "<download folder name or title>", "output_dir": "...?", "force_full": false }`
 
+### Knowledge generation stats
+
+- `POST /api/knowledge-stats`
+  - Summarizes `Knowledge/agent_knowledge.json` for a **downloaded** book folder (no full chapter payload).
+  - Body: `{ "book_name": "<folder name or title>", "output_dir": "...?" }` — **`book_name` is required** (aliases: `title`, `name`). This is the slug/folder name under the output directory, not the same field as `book_id` in `/api/download`.
+  - Returns fields such as: `exists`, `path`, `error_count`, `chapter_count`, `failed_chapter_keys`, `book_dir`, `book_name` (see `knowledge_stats_for_book` in `core/agent_grain_processor.py`).
+  - `404` if the book directory cannot be resolved under the output root.
+
+  **Example**
+
+  ```bash
+  curl -s -X POST "http://127.0.0.1:8000/api/knowledge-stats" \
+    -H "Content-Type: application/json" \
+    -d '{"book_name": "ai-engineering"}'
+  ```
+
 ### Progress polling
 
 - `GET /api/progress`
@@ -81,6 +117,27 @@ From the repo root:
 
 - `GET /api/kg/prompt?book_name=...&output_dir=...`
   - Reads `Knowledge/agent_knowledge.json` and returns the full prompt string used by `generate_kg_edges` (field `prompt`), plus `json_preview_max_chars` (embedded JSON is truncated to that length).
+
+### Save knowledge graph to file
+
+- `POST /api/kg/save`
+  - Writes a Property Graph JSON object under `<book_dir>/Knowledge/` for a **downloaded** book.
+  - Body:
+    - `book_name` (required; aliases `title`, `name`) — folder / slug under the output directory.
+    - `graph` (required) — JSON object with your `metadata` / `nodes` / `edges` (same schema as Workflow 3).
+    - `output_dir` (optional) — override output root; must pass server validation when set.
+    - `filename` (optional, default `kg_graph_openclaw.json`) — basename only; `.json` appended if missing; no path separators.
+    - `overwrite` (optional, default `true`) — if `false` and the file exists, returns `409`.
+  - Success: `{ "success": true, "path", "book_dir", "book_name", "filename" }`.
+  - Errors: `400` for missing fields / invalid filename / path traversal; `404` if book folder not found.
+
+  **Example**
+
+  ```bash
+  curl -s -X POST "http://127.0.0.1:8000/api/kg/save" \
+    -H "Content-Type: application/json" \
+    -d '{"book_name":"ai-engineering","graph":{"metadata":{"source":"local","generated_at":"2026-04-08","total_nodes":0,"total_edges":0},"nodes":[],"edges":[]}}'
+  ```
 
 ### Cookie/auth status
 
@@ -171,6 +228,8 @@ Compute output path:
 - File: `kg_graph_openclaw.json`
 
 Create directories if missing and write JSON with UTF-8.
+
+Alternatively, call `POST /api/kg/save` with the same `graph` object (see **Save knowledge graph to file** above).
 
 ## Workflow 4: Scheduled cookie/auth health check
 

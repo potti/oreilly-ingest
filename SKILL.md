@@ -77,6 +77,11 @@ From the repo root:
 - `GET /api/agent_knowledge?book_name=...&output_dir=...`
   - Returns the JSON body of `Knowledge/agent_knowledge.json`
 
+### Knowledge-graph LLM prompt (same as `generate_kg_edges`)
+
+- `GET /api/kg/prompt?book_name=...&output_dir=...`
+  - Reads `Knowledge/agent_knowledge.json` and returns the full prompt string used by `generate_kg_edges` (field `prompt`), plus `json_preview_max_chars` (embedded JSON is truncated to that length).
+
 ### Cookie/auth status
 
 - `GET /api/status`

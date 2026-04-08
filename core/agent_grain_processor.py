@@ -107,22 +107,17 @@ KG_MAX_EDGES = 50
 KG_JSON_PREVIEW_CHARS = 12000
 
 
-def generate_kg_edges(
-    full_json: dict,
-    *,
-    ollama_url: str,
-    model: str,
-    timeout_seconds: int,
-    llm_response_debug_path: Path | None = None,
-) -> dict:
-    """Extract a property-graph style KG from full agent_knowledge JSON (MiniMax CodePlan prompt)."""
+def build_kg_edges_prompt(full_json: dict) -> str:
+    """Build the exact LLM prompt used by ``generate_kg_edges`` (same truncation rules)."""
+    if not isinstance(full_json, dict):
+        raise TypeError("full_json must be a dict")
     meta_in = full_json.get("metadata") if isinstance(full_json.get("metadata"), dict) else {}
     source_label = str(meta_in.get("book_dir") or meta_in.get("source") or "O'Reilly")
     generated_day = _utc_now_iso()[:10]
 
     payload_preview = json.dumps(full_json, ensure_ascii=False, indent=2)[:KG_JSON_PREVIEW_CHARS]
 
-    prompt = f"""
+    return f"""
 你现在是一个知识图谱专家。请严格根据下面整本书的Agent JSON，提取高质量的Property Graph。
 只输出纯JSON，不要任何解释、markdown或额外文字。
 
@@ -154,6 +149,22 @@ JSON内容：
 }}
 """
 
+
+def generate_kg_edges(
+    full_json: dict,
+    *,
+    ollama_url: str,
+    model: str,
+    timeout_seconds: int,
+    llm_response_debug_path: Path | None = None,
+) -> dict:
+    """Extract a property-graph style KG from full agent_knowledge JSON (Ollama prompt)."""
+    meta_in = full_json.get("metadata") if isinstance(full_json.get("metadata"), dict) else {}
+    source_label = str(meta_in.get("book_dir") or meta_in.get("source") or "O'Reilly")
+    generated_day = _utc_now_iso()[:10]
+
+    prompt = build_kg_edges_prompt(full_json)
+
     def _empty_kg(err: str) -> dict:
         return {
             "metadata": {
@@ -168,6 +179,12 @@ JSON内容：
         }
 
     try:
+        if llm_response_debug_path is not None:
+            try:
+                llm_response_debug_path.parent.mkdir(parents=True, exist_ok=True)
+                (llm_response_debug_path.parent / "graph_prompt.txt").write_text(prompt, encoding="utf-8")
+            except OSError:
+                pass
         result = _call_ollama(prompt, ollama_url=ollama_url, model=model, timeout_seconds=timeout_seconds)
         if llm_response_debug_path is not None:
             try:

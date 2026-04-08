@@ -130,6 +130,9 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             elif path == "/api/agent_knowledge":
                 params = parse_qs(parsed.query)
                 self._handle_agent_knowledge_get(params)
+            elif path == "/api/kg/prompt":
+                params = parse_qs(parsed.query)
+                self._handle_kg_prompt_get(params)
             else:
                 super().do_GET()
         except Exception:
@@ -839,6 +842,76 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             return
 
         self._send_json(data)
+
+    def _handle_kg_prompt_get(self, params: dict):
+        """Return the full ``generate_kg_edges`` LLM prompt built from ``agent_knowledge.json``.
+
+        Query: book_name (or title / name), output_dir (optional).
+        Same JSON truncation rules as ``build_kg_edges_prompt`` (see json_preview_max_chars).
+        """
+        book_name = (
+            (params.get("book_name") or params.get("title") or params.get("name") or [""])[0] or ""
+        ).strip()
+        if not book_name:
+            self._send_json({"error": "book_name required (query: book_name=...)"}, 400)
+            return
+
+        output_plugin = self.kernel["output"]
+        out_dir_str = ((params.get("output_dir") or [""])[0] or "").strip()
+        if out_dir_str:
+            ok, msg, out_dir = output_plugin.validate_dir(out_dir_str)
+            if not ok or out_dir is None:
+                self._send_json({"error": msg}, 400)
+                return
+        else:
+            out_dir = output_plugin.get_default_dir()
+
+        book_dir = self._resolve_book_dir_by_name(book_name, out_dir)
+        if book_dir is None:
+            self._send_json({"error": f"Book directory not found under output: {book_name}"}, 404)
+            return
+
+        agent_path = book_dir / "Knowledge" / "agent_knowledge.json"
+        if not agent_path.is_file():
+            self._send_json(
+                {
+                    "error": "agent_knowledge.json not found",
+                    "path": str(agent_path.resolve()),
+                    "book_dir": str(book_dir.resolve()),
+                },
+                404,
+            )
+            return
+
+        try:
+            full_json = json.loads(agent_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            self._send_json({"error": str(e), "path": str(agent_path.resolve())}, 500)
+            return
+
+        if not isinstance(full_json, dict):
+            self._send_json({"error": "agent_knowledge.json root must be an object"}, 500)
+            return
+
+        from core.agent_grain_processor import KG_JSON_PREVIEW_CHARS, build_kg_edges_prompt
+
+        try:
+            prompt = build_kg_edges_prompt(full_json)
+        except TypeError as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+
+        debug_prompt_path = (book_dir / "Knowledge" / "_debug_ollama" / "graph_prompt.txt").resolve()
+        self._send_json(
+            {
+                "book_name": book_name,
+                "book_dir": str(book_dir.resolve()),
+                "agent_json": str(agent_path.resolve()),
+                "prompt": prompt,
+                "json_preview_max_chars": KG_JSON_PREVIEW_CHARS,
+                "saved_prompt_path": str(debug_prompt_path) if debug_prompt_path.is_file() else None,
+            }
+        )
 
     def _handle_kg_save(self, data: dict):
         """Save a Property Graph JSON under <book_dir>/Knowledge/.

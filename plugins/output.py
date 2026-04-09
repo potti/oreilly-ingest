@@ -57,6 +57,8 @@ class OutputPlugin(Plugin):
             folder_title = book_id
 
         folder_name = slugify(folder_title)
+        if not folder_name:
+            folder_name = slugify(str(book_id)) or str(book_id)
         book_dir = output_dir / folder_name
 
         # Handle same-title-different-book conflicts

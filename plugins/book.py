@@ -7,13 +7,18 @@ class BookPlugin(Plugin):
         search_data = self._fetch_search(book_id)
         epub_data = self._fetch_epub(book_id)
 
+        desc_block = epub_data.get("descriptions")
+        if not isinstance(desc_block, dict):
+            desc_block = {}
+        description = desc_block.get("text/html") or ""
+
         return {
             "id": book_id,
             "ourn": epub_data.get("ourn"),
             "title": epub_data.get("title"),
             "authors": search_data.get("authors", []),
             "publishers": search_data.get("publishers", []),
-            "description": epub_data.get("descriptions", {}).get("text/html", ""),
+            "description": description,
             "cover_url": search_data.get("cover_url"),
             "isbn": epub_data.get("isbn"),
             "language": epub_data.get("language", "en"),

@@ -1064,6 +1064,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             )
         except Exception as e:
             error_msg = str(e)
+            LOGGER.exception("download_failed book_id=%s error=%s", book_id, error_msg)
             if "cancelled" in error_msg.lower():
                 self._set_progress({"status": "cancelled", "error": error_msg})
             else:

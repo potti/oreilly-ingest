@@ -12,7 +12,7 @@ class HtmlProcessorPlugin(Plugin):
         if not content_div:
             content_div = soup.body or soup
 
-        self._convert_svg_images(content_div)
+        self._convert_svg_images(content_div, soup)
 
         if skip_images:
             self._remove_images(content_div)
@@ -30,13 +30,18 @@ class HtmlProcessorPlugin(Plugin):
         for img in soup.find_all("img"):
             img.decompose()
 
-    def _convert_svg_images(self, soup):
-        for image_tag in soup.find_all("image"):
+    def _convert_svg_images(self, fragment, root_soup):
+        """fragment is a Tag subtree; new_tag must be called on the BeautifulSoup root.
+
+        On plain Tag nodes, ``tag.new_tag`` is not a factory: Tag.__getattr__ treats it
+        as ``tag.find('new_tag')`` and returns None.
+        """
+        for image_tag in fragment.find_all("image"):
             href = image_tag.get("href") or image_tag.get("xlink:href")
             if not href:
                 continue
 
-            img_tag = soup.new_tag("img", src=href)
+            img_tag = root_soup.new_tag("img", src=href)
             parent = image_tag.parent
             if parent and parent.name == "svg":
                 parent.replace_with(img_tag)

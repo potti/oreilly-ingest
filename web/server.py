@@ -675,16 +675,21 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         start_response: tuple[dict, int] | None = None
         with DownloaderHandler._download_start_lock:
             with self._progress_lock:
-                thr = DownloaderHandler._download_thread
+                dthr = DownloaderHandler._download_thread
+                kth = DownloaderHandler._knowledge_thread
+                
                 status = self.download_progress.get("status")
-                active = bool(status and status not in DownloaderHandler._TERMINAL_STATUSES)
+                # terminal statuses includes download terminal statuses + knowledge terminal statuses
+                is_terminal = status in DownloaderHandler._TERMINAL_STATUSES or status in ("knowledge_completed", "knowledge_error")
+                active = bool(status and not is_terminal)
 
-                if thr is not None and thr.is_alive():
-                    start_response = ({"error": "Download already in progress"}, 409)
+                if (dthr is not None and dthr.is_alive()) or (kth is not None and kth.is_alive()):
+                    start_response = ({"error": "A task is already in progress"}, 409)
                 elif active:
                     # Progress still says "running" but worker is gone — e.g. crashed thread.
                     self.download_progress = {}
                     DownloaderHandler._download_thread = None
+                    DownloaderHandler._knowledge_thread = None
 
             if start_response is None:
                 worker = threading.Thread(
@@ -772,8 +777,19 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             with self._progress_lock:
                 dthr = DownloaderHandler._download_thread
                 kth = DownloaderHandler._knowledge_thread
+                
+                status = self.download_progress.get("status")
+                # terminal statuses includes download terminal statuses + knowledge terminal statuses
+                is_terminal = status in DownloaderHandler._TERMINAL_STATUSES or status in ("knowledge_completed", "knowledge_error")
+                active = bool(status and not is_terminal)
+
                 if (dthr is not None and dthr.is_alive()) or (kth is not None and kth.is_alive()):
                     start_response = ({"error": "Another task is already running"}, 409)
+                elif active:
+                    # Progress still says "running" but worker is gone — e.g. crashed thread.
+                    self.download_progress = {}
+                    DownloaderHandler._download_thread = None
+                    DownloaderHandler._knowledge_thread = None
 
             if start_response is None:
                 worker = threading.Thread(

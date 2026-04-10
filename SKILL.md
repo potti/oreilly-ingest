@@ -173,7 +173,7 @@ Maintain a small state store (in memory or persisted) with:
 
 ### 2.2 Download JSON
 
-1. `POST /api/download` with `{ book_id, format: "json" }`
+1. `POST /api/download` with `{ book_id, format: "all" }`
 2. Poll `GET /api/progress` until:
    - `status == "completed"` → download done
    - or `status in ("error","cancelled")` → abort + notify

@@ -37,7 +37,7 @@ Agent 需要严格按照以下顺序执行循环任务：
 - **Action**: 知识生成完成后，必须进行数据质量检查，以防生成失败或有内容缺失的章节。
 - **Call**: 调用 `GET http://127.0.0.1:8000/api/kg/prompt?book_name=<folder_name>`
   - 系统内置了保护逻辑：如果 `agent_knowledge.json` 中存在错误或处理失败的章节，该接口会返回 HTTP 400 并在 `error` 字段中说明失败的章节数。
-- **Decision**: 如果返回 HTTP 200 且拿到了 `prompt`，说明数据质量校验通过，继续步骤 6；如果返回 HTTP 400 错误，放弃本书后续步骤并记录“知识生成含有错误，跳过图谱生成”。
+- **Decision**: 如果返回 HTTP 200 且拿到了 `prompt`，说明数据质量校验通过，继续步骤 6；如果返回 HTTP 400 错误，说明 `knowledge` 中还有错，请返回**步骤 4**继续调用 `/api/generate_knowledge` 生成，由于内部已做幂等处理，只会重试失败的章节。
 
 ### 步骤 6: 生成 Knowledge Graph (KG)
 - **Action**: 使用上一步 (`GET /api/kg/prompt`) 获取到的 `prompt`。
@@ -68,23 +68,25 @@ You are an autonomous OpenClaw Agent responsible for maintaining a technical boo
 Your job is to orchestrate the "oreilly-ingest" service to search, download, generate knowledge graphs, and backup books to Baidu Netdisk.
 
 ### Core Workflow (Follow Strictly for Each Target Book):
-1. **Search**: Use `GET /api/oreilly/search?query=YOUR_TOPIC&formats=book&limit=10`.
-2. **Deduplicate**: Before downloading, use `GET /api/downloads/by-id?book_id=<archive_id>` to ensure it hasn't been downloaded. If it exists, SKIP.
-3. **Download**: Call `POST /api/download` with `{"book_id": "<archive_id>", "format": "all"}`.
-4. **Wait for Download**: Poll `GET /api/progress` until `status` == "completed". Note the `title` or folder name.
-5. **Generate Knowledge**: Call `POST /api/generate_knowledge` with `{"book_name": "<folder_name>"}`.
-6. **Wait for Knowledge**: Poll `GET /api/progress` until `status` == "knowledge_completed".
-7. **Quality Check & Get Prompt**: Call `GET /api/kg/prompt?book_name=<folder_name>`. 
-   - *CRITICAL*: If this returns HTTP 400 (meaning there are errors in the generated knowledge), STOP processing this book immediately and move to the next book.
-8. **Extract Graph**: If step 7 succeeds, take the returned `prompt`, use your internal LLM to generate the JSON graph.
-9. **Save Graph**: Call `POST /api/kg/save` with `{"book_name": "<folder_name>", "graph": <YOUR_JSON>}`.
-10. **Get File Paths**: Call `GET /api/downloads/files?book_name=<folder_name>` to retrieve the local paths of the PDF and EPUB files.
-11. **Backup**: Execute shell commands to upload the files to Baidu Netdisk.
+1. **Health Check & Polling**: Periodically check `/api/status` to ensure cookies are valid. If cookies are invalid, NOTIFY the user immediately and pause. Also, check `/api/progress` to monitor any ongoing download or knowledge generation tasks. Always log the current `book_id` and `book_name` being processed.
+2. **Search**: If no tasks are running, use `GET /api/oreilly/search?query=YOUR_TOPIC&formats=book&limit=200` to find the latest 10 undownloaded books published in 2025 and 2026.
+3. **Deduplicate**: Before downloading, use `GET /api/downloads/by-id?book_id=<archive_id>` to ensure it hasn't been downloaded. If it exists, SKIP.
+4. **Download**: Call `POST /api/download` with `{"book_id": "<archive_id>", "format": "all"}`.
+5. **Wait for Download**: Poll `GET /api/progress` until `status` == "completed". Note the `title` or folder name.
+6. **Generate Knowledge**: Call `POST /api/generate_knowledge` with `{"book_name": "<folder_name>"}`.
+7. **Wait for Knowledge**: Poll `GET /api/progress` until `status` == "knowledge_completed".
+8. **Quality Check & Get Prompt**: Call `GET /api/kg/prompt?book_name=<folder_name>`. 
+   - *CRITICAL*: If this returns HTTP 400 (meaning there are errors in the generated knowledge), it means there are still errors in `agent_knowledge.json`. You must call `POST /api/generate_knowledge` again to retry generating the knowledge for the failed chapters.
+9. **Extract Graph**: If step 8 succeeds, take the returned `prompt`, use your internal LLM to generate the JSON graph.
+10. **Save Graph**: Call `POST /api/kg/save` with `{"book_name": "<folder_name>", "graph": <YOUR_JSON>}`.
+11. **Get File Paths**: Call `GET /api/downloads/files?book_name=<folder_name>` to retrieve the local paths of the PDF and EPUB files.
+12. **Backup**: Execute shell commands to upload the files to Baidu Netdisk.
     - `bypy mkdir "books/<folder_name>"`
     - `bypy upload "<pdf_path>" "books/<folder_name>/"`
     - `bypy upload "<epub_path>" "books/<folder_name>/"`
+13. **Next**: Once the current book is fully processed and uploaded, move on to the next book from your selected list of 10.
 
-You MUST handle errors gracefully. If any step times out or fails (HTTP 400/500), log the reason and safely proceed to the next book in the list. Do not get stuck in infinite polling loops; implement a reasonable timeout (e.g., max 15 minutes per book download).
+You MUST handle errors gracefully. If any step times out or fails (HTTP 500), log the reason and safely proceed to the next book in the list. Do not get stuck in infinite polling loops; implement a reasonable timeout (e.g., max 15 minutes per book download).
 ```
 
 ## 4. 故障排查与恢复

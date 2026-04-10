@@ -40,11 +40,14 @@ class EpubPlugin(Plugin):
         return epub_path
 
     def _cleanup_build_artifacts(self, output_dir: Path):
-        """Remove intermediate EPUB build files after ZIP creation."""
+        """Remove EPUB-only scaffolding after ZIP creation.
+
+        ``OEBPS/`` is intentionally kept so later steps (e.g. WeasyPrint PDF in
+        ``plugins/pdf.py``) can still read ``OEBPS/*.xhtml``.
+        """
         artifacts = [
             output_dir / "mimetype",
             output_dir / "META-INF",
-            output_dir / "OEBPS",
         ]
         for artifact in artifacts:
             if artifact.is_file():

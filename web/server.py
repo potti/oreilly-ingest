@@ -127,6 +127,9 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             elif path == "/api/downloads/by-id":
                 params = parse_qs(parsed.query)
                 self._handle_download_by_id(params)
+            elif path == "/api/downloads/files":
+                params = parse_qs(parsed.query)
+                self._handle_downloads_files(params)
             elif path == "/api/agent_knowledge":
                 params = parse_qs(parsed.query)
                 self._handle_agent_knowledge_get(params)
@@ -458,6 +461,45 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                 "matches": matches,
                 "book_dir": matches[0]["path"],
                 "folder_name": matches[0]["folder_name"],
+            }
+        )
+
+    def _handle_downloads_files(self, params: dict):
+        """Return paths to generated pdf and epub files for a downloaded book.
+
+        Query: book_name (or title / name), output_dir (optional).
+        """
+        book_name = (
+            (params.get("book_name") or params.get("title") or params.get("name") or [""])[0] or ""
+        ).strip()
+        if not book_name:
+            self._send_json({"error": "book_name required (query: book_name=...)"}, 400)
+            return
+
+        output_plugin = self.kernel["output"]
+        out_dir_str = ((params.get("output_dir") or [""])[0] or "").strip()
+        if out_dir_str:
+            ok, msg, out_dir = output_plugin.validate_dir(out_dir_str)
+            if not ok or out_dir is None:
+                self._send_json({"error": msg}, 400)
+                return
+        else:
+            out_dir = output_plugin.get_default_dir()
+
+        book_dir = self._resolve_book_dir_by_name(book_name, out_dir)
+        if book_dir is None:
+            self._send_json({"error": f"Book directory not found under output: {book_name}"}, 404)
+            return
+
+        pdf_files = [str(p.resolve()) for p in book_dir.glob("*.pdf")]
+        epub_files = [str(p.resolve()) for p in book_dir.glob("*.epub")]
+
+        self._send_json(
+            {
+                "book_dir": str(book_dir.resolve()),
+                "book_name": book_name,
+                "pdf_files": pdf_files,
+                "epub_files": epub_files,
             }
         )
 

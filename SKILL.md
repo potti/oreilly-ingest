@@ -75,6 +75,13 @@ From the repo root:
 - `GET /api/downloads?page=1&page_size=10&output_dir=...`
   - Use to decide whether a book was downloaded previously (by folder name)
 
+### Downloads files paths
+
+- `GET /api/downloads/files?book_name=...&output_dir=...`
+  - Use to get the absolute paths to the generated `.pdf` and `.epub` files for a downloaded book.
+  - `book_name` (required; aliases `title`, `name`) — folder / slug under the output directory.
+  - Returns: `{ "book_dir": "...", "book_name": "...", "pdf_files": [...], "epub_files": [...] }`
+
 ### Download book
 
 - `POST /api/download`

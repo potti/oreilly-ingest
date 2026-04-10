@@ -491,6 +491,8 @@ def generate_agent_knowledge(
     n_todo = len(to_process)
     if n_todo == 0:
         report("skipped_chapters", total, total)
+        # Even if skipped, we should ensure the file exists/is updated
+        agent_path.write_text(json.dumps(full_json, ensure_ascii=False, indent=2), encoding="utf-8")
     else:
         for j, (idx, title, content, key) in enumerate(to_process, 1):
             report("processing_chapter", j, n_todo)
@@ -522,8 +524,9 @@ def generate_agent_knowledge(
                     "key_points": [],
                     "actionable": f"处理失败: {err_txt}",
                 }
-
-    agent_path.write_text(json.dumps(full_json, ensure_ascii=False, indent=2), encoding="utf-8")
+                
+        # Write agent_knowledge.json after processing all chapters
+        agent_path.write_text(json.dumps(full_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
     kg_path = out_dir / "kg_graph.json"
     # need_graph = n_todo > 0 or force_full or _kg_graph_needs_generation(kg_path)

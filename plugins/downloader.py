@@ -70,7 +70,7 @@ class DownloaderPlugin(Plugin):
         else:
             # Handle "all" special case
             if format_input == "all":
-                return ["epub", "markdown", "pdf", "plaintext", "json", "chunks"]
+                return ["epub", "markdown", "pdf","json"]
 
             # Split comma-separated and clean
             raw_formats = [f.strip().lower() for f in format_input.split(",") if f.strip()]

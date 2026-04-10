@@ -529,22 +529,27 @@ def generate_agent_knowledge(
     # need_graph = n_todo > 0 or force_full or _kg_graph_needs_generation(kg_path)
     need_graph = False # 暂时关闭图谱生成 外部LLM
     if need_graph:
-        report("generating_graph", total, total)
-        kg = generate_kg_edges(
-            full_json,
-            ollama_url=ollama_url,
-            model=model,
-            timeout_seconds=timeout_seconds,
-            llm_response_debug_path=debug_dir / "graph_raw.txt",
-        )
-        try:
-            (debug_dir / "graph_normalized.json").write_text(
-                json.dumps(kg, ensure_ascii=False, indent=2),
-                encoding="utf-8",
+        stats = knowledge_stats_for_book(book_dir)
+        if stats.get("error_count", 0) > 0:
+            report("generating_graph", total, total) # Just report progress
+            kg_path.write_text(json.dumps({"error": "Cannot generate KG: agent_knowledge.json has errors"}, ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
+            report("generating_graph", total, total)
+            kg = generate_kg_edges(
+                full_json,
+                ollama_url=ollama_url,
+                model=model,
+                timeout_seconds=timeout_seconds,
+                llm_response_debug_path=debug_dir / "graph_raw.txt",
             )
-        except OSError:
-            pass
-        kg_path.write_text(json.dumps(kg, ensure_ascii=False, indent=2), encoding="utf-8")
+            try:
+                (debug_dir / "graph_normalized.json").write_text(
+                    json.dumps(kg, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+            kg_path.write_text(json.dumps(kg, ensure_ascii=False, indent=2), encoding="utf-8")
 
     report("completed", total, total)
     return {

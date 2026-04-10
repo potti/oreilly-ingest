@@ -902,7 +902,12 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "agent_knowledge.json root must be an object"}, 500)
             return
 
-        from core.agent_grain_processor import KG_JSON_PREVIEW_CHARS, build_kg_edges_prompt
+        from core.agent_grain_processor import KG_JSON_PREVIEW_CHARS, build_kg_edges_prompt, knowledge_stats_for_book
+
+        stats = knowledge_stats_for_book(book_dir)
+        if stats.get("error_count", 0) > 0:
+            self._send_json({"error": f"Cannot generate KG prompt: {stats['error_count']} chapters failed in agent_knowledge.json. Please regenerate knowledge first."}, 400)
+            return
 
         try:
             prompt = build_kg_edges_prompt(full_json)

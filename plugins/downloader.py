@@ -342,7 +342,7 @@ class DownloaderPlugin(Plugin):
         )
 
         # EPUB
-        if "epub" in formats:
+        if "epub" in formats or "all" in formats:
             report("generating_epub", 90)
             epub_plugin = self.kernel["epub"]
             epub_path = epub_plugin.generate(
@@ -356,7 +356,7 @@ class DownloaderPlugin(Plugin):
             result.files["epub"] = str(epub_path)
 
         # Markdown
-        if "markdown" in formats or "md" in formats or "markdown-chapters" in formats:
+        if "markdown" in formats or "md" in formats or "markdown-chapters" in formats or "all" in formats:
             report("generating_markdown", 92)
             md_plugin = self.kernel["markdown"]
             md_plugin.generate_book(book_info, chapters_data, book_dir)
@@ -401,7 +401,7 @@ class DownloaderPlugin(Plugin):
             result.files["plaintext"] = str(txt_path)
 
         # JSON
-        if "json" in formats:
+        if "json" in formats or "all" in formats:
             report("generating_json", 97)
             json_plugin = self.kernel["json_export"]
             json_path = json_plugin.generate(

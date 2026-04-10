@@ -361,14 +361,18 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         start = (page - 1) * page_size
         slice_ = entries[start : start + page_size]
 
+        from core.agent_grain_processor import knowledge_stats_for_book
+
         items = []
         for book_path, mtime, book_id in slice_:
+            stats = knowledge_stats_for_book(book_path)
             items.append(
                 {
                     "folder_name": book_path.name,
                     "book_id": book_id,
                     "path": str(book_path.resolve()),
                     "modified_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                    "knowledge_stats": stats,
                 }
             )
 
@@ -407,6 +411,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             self._send_json({"exists": False, "book_id": book_id, "output_dir": str(root)}, 200)
             return
 
+        from core.agent_grain_processor import knowledge_stats_for_book
+
         matches: list[dict] = []
         for child in root.iterdir():
             if not child.is_dir() or child.name.startswith("."):
@@ -424,6 +430,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                 mtime = child.stat().st_mtime
             except OSError:
                 mtime = 0
+            
+            stats = knowledge_stats_for_book(child)
             matches.append(
                 {
                     "folder_name": child.name,
@@ -432,6 +440,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                     "modified_at": (
                         datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat() if mtime else None
                     ),
+                    "knowledge_stats": stats,
                 }
             )
 

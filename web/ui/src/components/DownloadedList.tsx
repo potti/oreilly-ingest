@@ -10,28 +10,11 @@ type Props = {
     outputDir: string;
 };
 
-type KnowledgeStatsPayload = {
-    exists?: boolean;
-    path?: string;
-    error_count?: number | null;
-    chapter_count?: number;
-    failed_chapter_keys?: string[];
-    message?: string;
-    parse_error?: boolean;
-    book_dir?: string;
-    book_name?: string;
-    error?: string;
-};
-
 export function DownloadedList({ outputDir }: Props) {
     const [page, setPage] = useState(1);
     const [data, setData] = useState<DownloadListResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [statsBusy, setStatsBusy] = useState<string | null>(null);
-    const [knowledgeStatsByPath, setKnowledgeStatsByPath] = useState<Record<string, KnowledgeStatsPayload>>(
-        {},
-    );
     const [knowledgeBusy, setKnowledgeBusy] = useState<string | null>(null);
     const [knowledgeProgress, setKnowledgeProgress] = useState<{
         status?: string;
@@ -144,62 +127,6 @@ export function DownloadedList({ outputDir }: Props) {
         };
     }, [knowledgeBusy]);
 
-    const fetchKnowledgeStats = useCallback(
-        async (item: DownloadListItem) => {
-            setStatsBusy(item.path);
-            try {
-                const body: { book_name: string; output_dir?: string } = { book_name: item.folder_name };
-                const trimmed = outputDir.trim();
-                if (trimmed) body.output_dir = trimmed;
-                const res = await fetch(`${API}/api/knowledge-stats`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body),
-                });
-                const raw = await res.text();
-                let parsed: KnowledgeStatsPayload = {};
-                try {
-                    parsed = raw ? (JSON.parse(raw) as KnowledgeStatsPayload) : {};
-                } catch (parseErr) {
-                    logApiOffPath('POST /api/knowledge-stats', '响应不是合法 JSON', {
-                        status: res.status,
-                        bodyPreview: previewText(raw),
-                        parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
-                    });
-                    setKnowledgeStatsByPath((prev) => ({
-                        ...prev,
-                        [item.path]: { message: '无法解析服务端响应' },
-                    }));
-                    return;
-                }
-                if (!res.ok) {
-                    logApiOffPath('POST /api/knowledge-stats', 'HTTP 非 2xx', {
-                        status: res.status,
-                        book_name: item.folder_name,
-                        bodyPreview: previewText(raw),
-                    });
-                    setKnowledgeStatsByPath((prev) => ({
-                        ...prev,
-                        [item.path]: {
-                            message: typeof parsed.error === 'string' ? parsed.error : `HTTP ${res.status}`,
-                        },
-                    }));
-                    return;
-                }
-                setKnowledgeStatsByPath((prev) => ({ ...prev, [item.path]: parsed }));
-            } catch (err) {
-                logErrorDetail('knowledge-stats failed', err);
-                setKnowledgeStatsByPath((prev) => ({
-                    ...prev,
-                    [item.path]: { message: err instanceof Error ? err.message : String(err) },
-                }));
-            } finally {
-                setStatsBusy(null);
-            }
-        },
-        [outputDir],
-    );
-
     const generateKnowledge = useCallback(
         async (item: DownloadListItem) => {
             // Keep a long-running busy state until /api/progress reports completion.
@@ -289,7 +216,7 @@ export function DownloadedList({ outputDir }: Props) {
                 <>
                     <ul className="divide-y divide-zinc-200 border border-zinc-200 rounded-lg bg-white overflow-hidden">
                         {data.items.map((item) => {
-                            const st = knowledgeStatsByPath[item.path];
+                            const st = item.knowledge_stats;
                             const statsLine = (() => {
                                 if (!st) return null;
                                 if (st.message && !st.exists && st.error_count == null) {
@@ -341,17 +268,9 @@ export function DownloadedList({ outputDir }: Props) {
                                             ? `生成中…${typeof knowledgeProgress?.percentage === 'number' ? ` ${knowledgeProgress.percentage}%` : ''}`
                                             : '生成知识'}
                                     </button>
-                                    <button
-                                        type="button"
-                                        disabled={statsBusy === item.path}
-                                        onClick={() => void fetchKnowledgeStats(item)}
-                                        className="px-3 py-1.5 text-xs font-medium text-oreilly-blue border border-oreilly-blue/30 rounded-lg hover:bg-oreilly-blue/5 disabled:opacity-50 transition-colors"
-                                    >
-                                        {statsBusy === item.path ? '统计中…' : '知识错误统计'}
-                                    </button>
                                 </div>
                                 {statsLine && (
-                                    <p className="text-xs text-left sm:text-right max-w-md break-words">{statsLine}</p>
+                                    <p className="text-xs text-left sm:text-right max-w-md break-words mt-1">{statsLine}</p>
                                 )}
                                 </div>
                             </li>

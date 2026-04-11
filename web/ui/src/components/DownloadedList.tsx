@@ -254,6 +254,19 @@ export function DownloadedList({ outputDir }: Props) {
                                             <span>无 book_id</span>
                                         )}
                                         <span>{fmtTime(item.modified_at)}</span>
+                                        {item.formats && (
+                                            <div className="flex gap-1.5 ml-1">
+                                                {item.formats.pdf && (
+                                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-700">PDF</span>
+                                                )}
+                                                {item.formats.epub && (
+                                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">EPUB</span>
+                                                )}
+                                                {item.formats.json && (
+                                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700">JSON</span>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                                 <div className="shrink-0 self-start sm:self-center flex flex-col items-stretch sm:items-end gap-1">

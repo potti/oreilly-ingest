@@ -369,6 +369,11 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         items = []
         for book_path, mtime, book_id in slice_:
             stats = knowledge_stats_for_book(book_path)
+            
+            has_pdf = any(book_path.glob("*.pdf"))
+            has_epub = any(book_path.glob("*.epub"))
+            has_json = any(book_path.glob("*.json"))
+
             items.append(
                 {
                     "folder_name": book_path.name,
@@ -376,6 +381,11 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                     "path": str(book_path.resolve()),
                     "modified_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
                     "knowledge_stats": stats,
+                    "formats": {
+                        "pdf": has_pdf,
+                        "epub": has_epub,
+                        "json": has_json,
+                    }
                 }
             )
 
@@ -434,6 +444,10 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             except OSError:
                 mtime = 0
             
+            has_pdf = any(child.glob("*.pdf"))
+            has_epub = any(child.glob("*.epub"))
+            has_json = any(child.glob("*.json"))
+
             stats = knowledge_stats_for_book(child)
             matches.append(
                 {
@@ -444,6 +458,11 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                         datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat() if mtime else None
                     ),
                     "knowledge_stats": stats,
+                    "formats": {
+                        "pdf": has_pdf,
+                        "epub": has_epub,
+                        "json": has_json,
+                    }
                 }
             )
 

@@ -37,6 +37,11 @@ export type DownloadListItem = {
     path: string;
     modified_at: string;
     knowledge_stats?: KnowledgeStatsPayload;
+    formats?: {
+        pdf: boolean;
+        epub: boolean;
+        json: boolean;
+    };
 };
 
 export type DownloadListResponse = {

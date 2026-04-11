@@ -1088,21 +1088,33 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
 
             def on_prog(phase: str, cur: int, total: int):
                 pct = 0
+                msg = f"{phase} {cur}/{total}"
+                
                 if phase == "starting":
                     pct = 0
                 elif phase == "processing_chapter":
                     pct = 5 + int((cur / max(total, 1)) * 90)
+                elif phase.startswith("processing_chapter_") and "_streaming" in phase:
+                    # phase format: "processing_chapter_{j}_streaming"
+                    # cur is chunk_count, total is n_todo
+                    try:
+                        j = int(phase.split("_")[2])
+                        pct = 5 + int((j / max(total, 1)) * 90)
+                        msg = f"processing_chapter {j}/{total} (streaming: {cur} chunks received...)"
+                    except ValueError:
+                        pct = 50
                 elif phase == "skipped_chapters":
                     pct = 92
                 elif phase == "generating_graph":
                     pct = 97
                 elif phase == "completed":
                     pct = 100
+                    
                 self._set_progress(
                     {
                         "status": "generating_knowledge",
                         "percentage": min(99, pct) if pct < 100 else 100,
-                        "message": f"{phase} {cur}/{total}",
+                        "message": msg,
                         "book_dir": str(book_dir),
                     }
                 )

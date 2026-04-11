@@ -27,20 +27,42 @@ def _call_ollama(
     ollama_url: str,
     model: str,
     timeout_seconds: int = DEFAULT_OLLAMA_TIMEOUT,
+    stream_callback: Callable[[int], None] | None = None,
 ) -> str:
     """Call Ollama generate API (optionally via reverse proxy)."""
     data = {
         "model": model,
         "prompt": prompt,
-        "stream": False,
+        "stream": True,
         "options": {"num_ctx": 4096, "temperature": 0.3},
     }
-    resp = requests.post(f"{ollama_url.rstrip('/')}/api/generate", json=data, timeout=timeout_seconds)
+    resp = requests.post(
+        f"{ollama_url.rstrip('/')}/api/generate", 
+        json=data, 
+        timeout=timeout_seconds,
+        stream=True
+    )
     resp.raise_for_status()
-    payload = resp.json()
-    if not isinstance(payload, dict) or "response" not in payload:
-        raise ValueError("Invalid Ollama response payload")
-    text = str(payload["response"])
+    
+    full_text = []
+    chunk_count = 0
+    # Every time we receive 10 chunks, we emit a heartbeat callback
+    HEARTBEAT_INTERVAL = 10 
+
+    for line in resp.iter_lines():
+        if line:
+            try:
+                payload = json.loads(line)
+                if isinstance(payload, dict) and "response" in payload:
+                    full_text.append(payload["response"])
+                    chunk_count += 1
+                    if stream_callback is not None and chunk_count % HEARTBEAT_INTERVAL == 0:
+                        # Report current approximate word/char count based on chunks received
+                        stream_callback(chunk_count)
+            except json.JSONDecodeError:
+                continue
+
+    text = "".join(full_text)
     if text.strip() == "":
         raise ValueError("Empty Ollama response")
     return text
@@ -495,6 +517,10 @@ def generate_agent_knowledge(
         agent_path.write_text(json.dumps(full_json, ensure_ascii=False, indent=2), encoding="utf-8")
     else:
         for j, (idx, title, content, key) in enumerate(to_process, 1):
+            def heartbeat_cb(chunk_cnt: int):
+                if progress_callback is not None:
+                    progress_callback(f"processing_chapter_{j}_streaming", chunk_cnt, n_todo)
+
             report("processing_chapter", j, n_todo)
             prompt = (
                 f"请严格按以下JSON格式输出本书第{idx}章《{title}》的Agent知识粮：\n"
@@ -508,7 +534,11 @@ def generate_agent_knowledge(
             )
             try:
                 result = _call_ollama(
-                    prompt, ollama_url=ollama_url, model=model, timeout_seconds=timeout_seconds
+                    prompt, 
+                    ollama_url=ollama_url, 
+                    model=model, 
+                    timeout_seconds=timeout_seconds,
+                    stream_callback=heartbeat_cb
                 )
                 (debug_dir / f"chapter_{idx:03d}_raw.txt").write_text(result, encoding="utf-8")
                 chapter_json = _parse_first_json_object(result)

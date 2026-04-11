@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,12 +36,13 @@ class ChunkingPlugin(Plugin):
         book_metadata: dict,
         chapters_data: list[tuple[str, str, str]],
         config: ChunkConfig | None = None,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> Path:
         """Generate chunked JSONL export."""
         if config is None:
             config = ChunkConfig()
 
-        chunks = self.chunk_book(chapters_data, config)
+        chunks = self.chunk_book(chapters_data, config, progress_callback=progress_callback)
 
         title = book_metadata.get("title", "Unknown")
         safe_title = sanitize_filename(title)
@@ -56,12 +58,16 @@ class ChunkingPlugin(Plugin):
         self,
         chapters_data: list[tuple[str, str, str]],
         config: ChunkConfig,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> list[dict]:
         """Chunk an entire book, preserving chapter metadata."""
         all_chunks = []
         chunk_id = 0
+        total = len(chapters_data)
 
         for chapter_index, (filename, title, html) in enumerate(chapters_data):
+            if progress_callback is not None:
+                progress_callback(chapter_index + 1, total, title or filename)
             text = self._extractor.extract_text_only(html)
 
             chapter_chunks = self.chunk_text(

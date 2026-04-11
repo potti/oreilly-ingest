@@ -31,6 +31,18 @@ class PdfPlugin(Plugin):
                 ) from e
         return self._weasyprint
 
+    def _html_class(self):
+        """Return WeasyPrint HTML class; raise clear error if the install is broken."""
+        wp = self.weasyprint
+        HTML = getattr(wp, "HTML", None)
+        if not callable(HTML):
+            raise ImportError(
+                "WeasyPrint is present but HTML builder is not callable (broken install?). "
+                "Check Docker logs and system libs (Pango/Harfbuzz). "
+                f"module={wp!r}, HTML={HTML!r}"
+            )
+        return HTML
+
     def generate(
         self,
         book_info: dict,
@@ -70,7 +82,8 @@ class PdfPlugin(Plugin):
         safe_title = sanitize_filename(title)
         pdf_path = output_dir / f"{safe_title}.pdf"
 
-        html_doc = self.weasyprint.HTML(
+        HTML = self._html_class()
+        html_doc = HTML(
             string=html_content,
             base_url=str(oebps),
         )
@@ -138,7 +151,8 @@ class PdfPlugin(Plugin):
             pdf_filename = f"{i+1:03d}_{safe_title}.pdf"
             pdf_path = pdf_dir / pdf_filename
 
-            html_doc = self.weasyprint.HTML(
+            HTML = self._html_class()
+            html_doc = HTML(
                 string=chapter_html,
                 base_url=str(oebps),
             )

@@ -19,5 +19,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 COPY --from=ui-build /repo/web/static /app/web/static
 
+# Create logs dir for file logging (also mountable via docker-compose)
+RUN mkdir -p /app/logs
+
 EXPOSE 8000
 CMD ["python", "main.py", "--host", "0.0.0.0"]

@@ -38,6 +38,7 @@ cookies.json
 
 # Logs
 *.log
+logs/
 
 # Testing
 .coverage

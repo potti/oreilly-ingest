@@ -70,7 +70,7 @@ class DownloaderPlugin(Plugin):
         else:
             # Handle "all" special case
             if format_input == "all":
-                return ["epub", "markdown", "pdf", "plaintext", "json", "chunks"]
+                return ["epub", "markdown", "pdf","json"]
 
             # Split comma-separated and clean
             raw_formats = [f.strip().lower() for f in format_input.split(",") if f.strip()]
@@ -342,7 +342,7 @@ class DownloaderPlugin(Plugin):
         )
 
         # EPUB
-        if "epub" in formats:
+        if "epub" in formats or "all" in formats:
             report("generating_epub", 90)
             epub_plugin = self.kernel["epub"]
             epub_path = epub_plugin.generate(
@@ -356,7 +356,7 @@ class DownloaderPlugin(Plugin):
             result.files["epub"] = str(epub_path)
 
         # Markdown
-        if "markdown" in formats or "md" in formats or "markdown-chapters" in formats:
+        if "markdown" in formats or "md" in formats or "markdown-chapters" in formats or "all" in formats:
             report("generating_markdown", 92)
             md_plugin = self.kernel["markdown"]
             md_plugin.generate_book(book_info, chapters_data, book_dir)
@@ -401,7 +401,7 @@ class DownloaderPlugin(Plugin):
             result.files["plaintext"] = str(txt_path)
 
         # JSON
-        if "json" in formats:
+        if "json" in formats or "all" in formats:
             report("generating_json", 97)
             json_plugin = self.kernel["json_export"]
             json_path = json_plugin.generate(
@@ -414,13 +414,38 @@ class DownloaderPlugin(Plugin):
 
         # Chunks
         if "chunks" in formats:
-            report("generating_chunks", 98)
             chunking_plugin = self.kernel["chunking"]
+            total_ch = len(chapters_data)
+
+            def on_chunk_progress(done: int, total: int, title: str):
+                if total <= 0:
+                    pct = 98
+                else:
+                    pct = min(99, 98 + int((done / total) * 1.99))
+                short = (title[:80] + "…") if len(title) > 80 else title
+                report(
+                    "generating_chunks",
+                    pct,
+                    message=f"Chunking {done}/{total}: {short}" if total else "Chunking…",
+                    current_chapter=done,
+                    total_chapters=total,
+                    chapter_title=title,
+                )
+
+            report(
+                "generating_chunks",
+                98,
+                message="Starting chunking…",
+                current_chapter=0,
+                total_chapters=total_ch,
+                chapter_title="",
+            )
             chunks_path = chunking_plugin.generate(
                 book_dir=book_dir,
                 book_metadata=book_info,
                 chapters_data=chapters_data,
                 config=chunk_config,
+                progress_callback=on_chunk_progress,
             )
             result.files["chunks"] = str(chunks_path)
 

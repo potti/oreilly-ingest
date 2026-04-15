@@ -71,6 +71,9 @@ export function DownloadedList({ outputDir }: Props) {
         [outputDir],
     );
 
+    const [listSeq, setListSeq] = useState(0);
+    const reloadList = useCallback(() => setListSeq((n) => n + 1), []);
+
     useEffect(() => {
         setPage(1);
     }, [outputDir]);
@@ -130,7 +133,7 @@ export function DownloadedList({ outputDir }: Props) {
         }
         void load();
         return () => ac.abort();
-    }, [page, outputDir]);
+    }, [page, outputDir, listSeq]);
 
     const total = data?.total ?? 0;
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -411,6 +414,7 @@ export function DownloadedList({ outputDir }: Props) {
                     bookName={drawerItem.folder_name}
                     outputDir={outputDir}
                     onClose={() => setDrawerItem(null)}
+                    onImagesChanged={reloadList}
                 />
             )}
         </section>

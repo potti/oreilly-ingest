@@ -179,6 +179,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                 self._handle_reveal(data)
             elif post_path == "/api/settings/output-dir":
                 self._handle_set_output_dir(data)
+            elif post_path == "/api/knowledge/images/delete":
+                self._handle_knowledge_images_delete(data)
             else:
                 self._send_json({"error": "Not found"}, 404)
         except Exception:
@@ -694,6 +696,81 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             while chunk := f.read(64 * 1024):
                 self.wfile.write(chunk)
         self.wfile.flush()
+
+    def _handle_knowledge_images_delete(self, data: dict):
+        """Delete one or more images from Knowledge/."""
+        book_name = (data.get("book_name") or "").strip()
+        filenames = data.get("filenames", [])
+
+        if not book_name:
+            self._send_json({"error": "book_name required"}, 400)
+            return
+        if not isinstance(filenames, list) or not filenames:
+            self._send_json({"error": "filenames must be a non-empty array"}, 400)
+            return
+
+        output_plugin = self.kernel["output"]
+        out_dir_str = (data.get("output_dir") or "").strip()
+        if out_dir_str:
+            ok, msg, out_dir = output_plugin.validate_dir(out_dir_str)
+            if not ok or out_dir is None:
+                self._send_json({"error": msg or "Invalid output directory"}, 400)
+                return
+        else:
+            out_dir = output_plugin.get_default_dir()
+
+        book_dir = self._resolve_book_dir_by_name(book_name, out_dir)
+        if book_dir is None:
+            self._send_json({"error": f"Book directory not found: {book_name}"}, 404)
+            return
+
+        knowledge_dir = book_dir / "Knowledge"
+        if not knowledge_dir.is_dir():
+            self._send_json({"error": "Knowledge directory does not exist"}, 404)
+            return
+
+        resolved_knowledge = knowledge_dir.resolve()
+        deleted = []
+        failed = []
+
+        for fname in filenames:
+            if not isinstance(fname, str):
+                failed.append({"filename": str(fname), "reason": "invalid type"})
+                continue
+            fname = fname.strip()
+            if not fname or "/" in fname or "\\" in fname or ".." in fname:
+                failed.append({"filename": fname, "reason": "invalid filename"})
+                continue
+
+            target = knowledge_dir / fname
+            try:
+                if not str(target.resolve()).startswith(str(resolved_knowledge)):
+                    failed.append({"filename": fname, "reason": "path traversal"})
+                    continue
+            except (OSError, ValueError):
+                failed.append({"filename": fname, "reason": "invalid path"})
+                continue
+
+            if not target.is_file():
+                failed.append({"filename": fname, "reason": "not found"})
+                continue
+
+            try:
+                target.unlink()
+                deleted.append(fname)
+            except OSError as e:
+                failed.append({"filename": fname, "reason": str(e)})
+
+        remaining = sum(
+            1 for f in knowledge_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in self._IMAGE_EXTENSIONS
+        )
+
+        self._send_json({
+            "deleted": deleted,
+            "failed": failed,
+            "remaining_count": remaining,
+        })
 
     def _handle_set_output_dir(self, data: dict):
         """Handle output directory selection - browse or direct path."""

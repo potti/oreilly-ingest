@@ -262,75 +262,110 @@ export function ImageDrawer({ bookName, outputDir, onClose, onImagesChanged }: P
                         <p className="text-sm text-zinc-500 py-12 text-center">暂无介绍图片</p>
                     )}
 
-                    {!loading && !error && images.length > 0 && (
-                        <div className="grid grid-cols-2 gap-3">
-                            {images.map((filename, idx) => (
-                                <div key={filename} className="relative group">
-                                    {selectMode && (
-                                        <button
-                                            type="button"
-                                            onClick={() => toggleSelect(filename)}
-                                            className="absolute top-2 left-2 z-10"
-                                        >
-                                            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
-                                                selected.has(filename)
-                                                    ? 'bg-oreilly-blue border-oreilly-blue'
-                                                    : 'bg-white/80 border-zinc-300 hover:border-oreilly-blue'
-                                            }`}>
-                                                {selected.has(filename) && (
-                                                    <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" />
+                    {!loading && !error && images.length > 0 && (() => {
+                        const groups = new Map<string, { path: string; globalIdx: number }[]>();
+                        images.forEach((path, globalIdx) => {
+                            const slash = path.lastIndexOf('/');
+                            const dir = slash >= 0 ? path.substring(0, slash) : '';
+                            const list = groups.get(dir) ?? [];
+                            list.push({ path, globalIdx });
+                            groups.set(dir, list);
+                        });
+                        const sortedDirs = [...groups.keys()].sort((a, b) => {
+                            if (a === '') return -1;
+                            if (b === '') return 1;
+                            return a.localeCompare(b);
+                        });
+                        return (
+                            <div className="space-y-5">
+                                {sortedDirs.map((dir) => {
+                                    const items = groups.get(dir)!;
+                                    return (
+                                        <div key={dir}>
+                                            {sortedDirs.length > 1 && (
+                                                <div className="flex items-center gap-2 mb-2">
+                                                    <svg className="w-3.5 h-3.5 text-zinc-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                                                     </svg>
-                                                )}
-                                            </div>
-                                        </button>
-                                    )}
+                                                    <span className="text-xs font-medium text-zinc-500 truncate">
+                                                        {dir || 'Knowledge/'}
+                                                    </span>
+                                                    <span className="text-[10px] text-zinc-400">{items.length}</span>
+                                                </div>
+                                            )}
+                                            <div className="grid grid-cols-2 gap-3">
+                                                {items.map(({ path: filename, globalIdx: idx }) => (
+                                                    <div key={filename} className="relative group">
+                                                        {selectMode && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => toggleSelect(filename)}
+                                                                className="absolute top-2 left-2 z-10"
+                                                            >
+                                                                <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
+                                                                    selected.has(filename)
+                                                                        ? 'bg-oreilly-blue border-oreilly-blue'
+                                                                        : 'bg-white/80 border-zinc-300 hover:border-oreilly-blue'
+                                                                }`}>
+                                                                    {selected.has(filename) && (
+                                                                        <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" />
+                                                                        </svg>
+                                                                    )}
+                                                                </div>
+                                                            </button>
+                                                        )}
 
-                                    {!selectMode && (
-                                        <button
-                                            type="button"
-                                            onClick={(e) => { e.stopPropagation(); void deleteSingle(filename); }}
-                                            className="absolute top-2 right-2 z-10 p-1 rounded-md bg-black/40 text-white/80 opacity-0 group-hover:opacity-100 hover:bg-red-600 hover:text-white transition-all"
-                                            title="删除"
-                                        >
-                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                            </svg>
-                                        </button>
-                                    )}
+                                                        {!selectMode && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={(e) => { e.stopPropagation(); void deleteSingle(filename); }}
+                                                                className="absolute top-2 right-2 z-10 p-1 rounded-md bg-black/40 text-white/80 opacity-0 group-hover:opacity-100 hover:bg-red-600 hover:text-white transition-all"
+                                                                title="删除"
+                                                            >
+                                                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                                </svg>
+                                                            </button>
+                                                        )}
 
-                                    <button
-                                        type="button"
-                                        onClick={() => selectMode ? toggleSelect(filename) : setLightboxIdx(idx)}
-                                        className={`w-full rounded-lg overflow-hidden border transition-all bg-zinc-50 ${
-                                            selectMode && selected.has(filename)
-                                                ? 'border-oreilly-blue ring-2 ring-oreilly-blue/30'
-                                                : 'border-zinc-200 hover:border-zinc-400 hover:shadow-md'
-                                        }`}
-                                    >
-                                        <img
-                                            src={imgUrl(filename)}
-                                            alt={filename}
-                                            loading="lazy"
-                                            className="w-full h-auto object-contain"
-                                        />
-                                        {!selectMode && (
-                                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
-                                                <svg
-                                                    className="w-6 h-6 text-white opacity-0 group-hover:opacity-80 transition-opacity drop-shadow"
-                                                    fill="none"
-                                                    stroke="currentColor"
-                                                    viewBox="0 0 24 24"
-                                                >
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
-                                                </svg>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => selectMode ? toggleSelect(filename) : setLightboxIdx(idx)}
+                                                            className={`w-full rounded-lg overflow-hidden border transition-all bg-zinc-50 ${
+                                                                selectMode && selected.has(filename)
+                                                                    ? 'border-oreilly-blue ring-2 ring-oreilly-blue/30'
+                                                                    : 'border-zinc-200 hover:border-zinc-400 hover:shadow-md'
+                                                            }`}
+                                                        >
+                                                            <img
+                                                                src={imgUrl(filename)}
+                                                                alt={filename.split('/').pop() ?? filename}
+                                                                loading="lazy"
+                                                                className="w-full h-auto object-contain"
+                                                            />
+                                                            {!selectMode && (
+                                                                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+                                                                    <svg
+                                                                        className="w-6 h-6 text-white opacity-0 group-hover:opacity-80 transition-opacity drop-shadow"
+                                                                        fill="none"
+                                                                        stroke="currentColor"
+                                                                        viewBox="0 0 24 24"
+                                                                    >
+                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                                                                    </svg>
+                                                                </div>
+                                                            )}
+                                                        </button>
+                                                    </div>
+                                                ))}
                                             </div>
-                                        )}
-                                    </button>
-                                </div>
-                            ))}
-                        </div>
-                    )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        );
+                    })()}
                 </div>
             </div>
 

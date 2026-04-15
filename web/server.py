@@ -389,7 +389,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             img_count = 0
             if knowledge_dir.is_dir():
                 img_count = sum(
-                    1 for f in knowledge_dir.iterdir()
+                    1 for f in knowledge_dir.rglob("*")
                     if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp")
                 )
 
@@ -630,21 +630,23 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         return knowledge_dir, ""
 
     def _handle_knowledge_images_list(self, params: dict):
-        """Return list of image filenames under Knowledge/."""
+        """Return list of image relative paths under Knowledge/ (recursive)."""
         knowledge_dir, err = self._resolve_knowledge_dir(params)
         if knowledge_dir is None:
             status = 404 if "not found" in err.lower() or "not exist" in err.lower() else 400
             self._send_json({"error": err}, status)
             return
 
+        resolved_root = knowledge_dir.resolve()
         images = sorted(
-            f.name for f in knowledge_dir.iterdir()
+            str(f.resolve().relative_to(resolved_root))
+            for f in knowledge_dir.rglob("*")
             if f.is_file() and f.suffix.lower() in self._IMAGE_EXTENSIONS
         )
         self._send_json({"images": images, "count": len(images)})
 
     def _handle_knowledge_image_serve(self, params: dict):
-        """Stream a single image from Knowledge/ to the browser."""
+        """Stream a single image from Knowledge/ (or subdirs) to the browser."""
         knowledge_dir, err = self._resolve_knowledge_dir(params)
         if knowledge_dir is None:
             status = 404 if "not found" in err.lower() or "not exist" in err.lower() else 400
@@ -656,7 +658,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "filename required"}, 400)
             return
 
-        if "/" in filename or "\\" in filename or ".." in filename:
+        if "\\" in filename or ".." in filename:
             self._send_json({"error": "Invalid filename"}, 400)
             return
 
@@ -738,7 +740,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                 failed.append({"filename": str(fname), "reason": "invalid type"})
                 continue
             fname = fname.strip()
-            if not fname or "/" in fname or "\\" in fname or ".." in fname:
+            if not fname or "\\" in fname or ".." in fname:
                 failed.append({"filename": fname, "reason": "invalid filename"})
                 continue
 
@@ -762,7 +764,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                 failed.append({"filename": fname, "reason": str(e)})
 
         remaining = sum(
-            1 for f in knowledge_dir.iterdir()
+            1 for f in knowledge_dir.rglob("*")
             if f.is_file() and f.suffix.lower() in self._IMAGE_EXTENSIONS
         )
 

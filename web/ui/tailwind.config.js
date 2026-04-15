@@ -25,6 +25,7 @@ export default {
             animation: {
                 'fade-in': 'fadeIn 0.2s ease-out',
                 'slide-down': 'slideDown 0.25s ease-out',
+                'slide-in-right': 'slideInRight 0.25s ease-out',
                 shake: 'shake 0.4s ease',
                 'pulse-subtle': 'pulseSubtle 2s ease-in-out infinite',
             },
@@ -36,6 +37,10 @@ export default {
                 slideDown: {
                     '0%': { opacity: '0', transform: 'translateY(-8px)' },
                     '100%': { opacity: '1', transform: 'translateY(0)' },
+                },
+                slideInRight: {
+                    '0%': { transform: 'translateX(100%)' },
+                    '100%': { transform: 'translateX(0)' },
                 },
                 shake: {
                     '0%, 100%': { transform: 'translateX(0)' },

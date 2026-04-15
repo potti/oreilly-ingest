@@ -42,6 +42,7 @@ export type DownloadListItem = {
         epub: boolean;
         json: boolean;
     };
+    knowledge_images_count?: number;
 };
 
 export type DownloadListResponse = {

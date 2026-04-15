@@ -139,6 +139,12 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             elif path == "/api/kg/prompt":
                 params = parse_qs(parsed.query)
                 self._handle_kg_prompt_get(params)
+            elif path == "/api/knowledge/images":
+                params = parse_qs(parsed.query)
+                self._handle_knowledge_images_list(params)
+            elif path == "/api/knowledge/image":
+                params = parse_qs(parsed.query)
+                self._handle_knowledge_image_serve(params)
             else:
                 super().do_GET()
         except Exception:
@@ -377,6 +383,14 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             has_epub = any(book_path.glob("*.epub"))
             has_json = any(book_path.glob("*.json"))
 
+            knowledge_dir = book_path / "Knowledge"
+            img_count = 0
+            if knowledge_dir.is_dir():
+                img_count = sum(
+                    1 for f in knowledge_dir.iterdir()
+                    if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp")
+                )
+
             items.append(
                 {
                     "folder_name": book_path.name,
@@ -388,7 +402,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                         "pdf": has_pdf,
                         "epub": has_epub,
                         "json": has_json,
-                    }
+                    },
+                    "knowledge_images_count": img_count,
                 }
             )
 
@@ -575,6 +590,103 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         self.send_header(
             "Content-Disposition", f'attachment; filename="{safe_name}"'
         )
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        with open(target, "rb") as f:
+            while chunk := f.read(64 * 1024):
+                self.wfile.write(chunk)
+        self.wfile.flush()
+
+    _IMAGE_EXTENSIONS = frozenset((".png", ".jpg", ".jpeg", ".gif", ".webp"))
+
+    def _resolve_knowledge_dir(self, params: dict) -> tuple[Path | None, str]:
+        """Resolve Knowledge/ dir from query params. Returns (path, error_msg)."""
+        book_name = (
+            (params.get("book_name") or params.get("name") or [""])[0] or ""
+        ).strip()
+        if not book_name:
+            return None, "book_name required"
+
+        output_plugin = self.kernel["output"]
+        out_dir_str = ((params.get("output_dir") or [""])[0] or "").strip()
+        if out_dir_str:
+            ok, msg, out_dir = output_plugin.validate_dir(out_dir_str)
+            if not ok or out_dir is None:
+                return None, msg or "Invalid output directory"
+        else:
+            out_dir = output_plugin.get_default_dir()
+
+        book_dir = self._resolve_book_dir_by_name(book_name, out_dir)
+        if book_dir is None:
+            return None, f"Book directory not found: {book_name}"
+
+        knowledge_dir = book_dir / "Knowledge"
+        if not knowledge_dir.is_dir():
+            return None, "Knowledge directory does not exist"
+
+        return knowledge_dir, ""
+
+    def _handle_knowledge_images_list(self, params: dict):
+        """Return list of image filenames under Knowledge/."""
+        knowledge_dir, err = self._resolve_knowledge_dir(params)
+        if knowledge_dir is None:
+            status = 404 if "not found" in err.lower() or "not exist" in err.lower() else 400
+            self._send_json({"error": err}, status)
+            return
+
+        images = sorted(
+            f.name for f in knowledge_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in self._IMAGE_EXTENSIONS
+        )
+        self._send_json({"images": images, "count": len(images)})
+
+    def _handle_knowledge_image_serve(self, params: dict):
+        """Stream a single image from Knowledge/ to the browser."""
+        knowledge_dir, err = self._resolve_knowledge_dir(params)
+        if knowledge_dir is None:
+            status = 404 if "not found" in err.lower() or "not exist" in err.lower() else 400
+            self._send_json({"error": err}, status)
+            return
+
+        filename = ((params.get("filename") or params.get("file") or [""])[0] or "").strip()
+        if not filename:
+            self._send_json({"error": "filename required"}, 400)
+            return
+
+        if "/" in filename or "\\" in filename or ".." in filename:
+            self._send_json({"error": "Invalid filename"}, 400)
+            return
+
+        target = knowledge_dir / filename
+        if not target.is_file():
+            self._send_json({"error": f"Image not found: {filename}"}, 404)
+            return
+
+        try:
+            resolved = target.resolve()
+            if not str(resolved).startswith(str(knowledge_dir.resolve())):
+                self._send_json({"error": "Invalid filename"}, 400)
+                return
+        except (OSError, ValueError):
+            self._send_json({"error": "Invalid filename"}, 400)
+            return
+
+        ext = target.suffix.lower()
+        content_types = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+        }
+        ct = content_types.get(ext, "application/octet-stream")
+        file_size = target.stat().st_size
+
+        self.send_response(200)
+        self.send_header("Content-Type", ct)
+        self.send_header("Content-Length", str(file_size))
+        self.send_header("Cache-Control", "public, max-age=3600")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 

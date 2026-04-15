@@ -130,6 +130,9 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             elif path == "/api/downloads/files":
                 params = parse_qs(parsed.query)
                 self._handle_downloads_files(params)
+            elif path == "/api/download-file":
+                params = parse_qs(parsed.query)
+                self._handle_download_file(params)
             elif path == "/api/agent_knowledge":
                 params = parse_qs(parsed.query)
                 self._handle_agent_knowledge_get(params)
@@ -521,6 +524,64 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                 "epub_files": epub_files,
             }
         )
+
+    def _handle_download_file(self, params: dict):
+        """Stream a generated file (pdf/epub/json) to the browser for download."""
+        book_name = (
+            (params.get("book_name") or params.get("name") or [""])[0] or ""
+        ).strip()
+        fmt = ((params.get("format") or [""])[0] or "").strip().lower()
+
+        if not book_name:
+            self._send_json({"error": "book_name required"}, 400)
+            return
+        if fmt not in ("pdf", "epub", "json"):
+            self._send_json({"error": "format must be one of: pdf, epub, json"}, 400)
+            return
+
+        output_plugin = self.kernel["output"]
+        out_dir_str = ((params.get("output_dir") or [""])[0] or "").strip()
+        if out_dir_str:
+            ok, msg, out_dir = output_plugin.validate_dir(out_dir_str)
+            if not ok or out_dir is None:
+                self._send_json({"error": msg}, 400)
+                return
+        else:
+            out_dir = output_plugin.get_default_dir()
+
+        book_dir = self._resolve_book_dir_by_name(book_name, out_dir)
+        if book_dir is None:
+            self._send_json({"error": f"Book directory not found: {book_name}"}, 404)
+            return
+
+        files = sorted(book_dir.glob(f"*.{fmt}"))
+        if not files:
+            self._send_json({"error": f"No .{fmt} file found in {book_dir.name}"}, 404)
+            return
+
+        target = files[0]
+        file_size = target.stat().st_size
+
+        content_types = {
+            "pdf": "application/pdf",
+            "epub": "application/epub+zip",
+            "json": "application/json",
+        }
+
+        self.send_response(200)
+        self.send_header("Content-Type", content_types[fmt])
+        self.send_header("Content-Length", str(file_size))
+        safe_name = target.name.replace('"', '\\"')
+        self.send_header(
+            "Content-Disposition", f'attachment; filename="{safe_name}"'
+        )
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        with open(target, "rb") as f:
+            while chunk := f.read(64 * 1024):
+                self.wfile.write(chunk)
+        self.wfile.flush()
 
     def _handle_set_output_dir(self, data: dict):
         """Handle output directory selection - browse or direct path."""

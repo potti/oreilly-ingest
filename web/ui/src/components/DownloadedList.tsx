@@ -1,10 +1,18 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { API } from '../constants';
 import type { DownloadListItem, DownloadListResponse } from '../types';
 import { logApiOffPath, logErrorDetail, previewText } from '../utils';
 
 const PAGE_SIZE = 10;
 const KNOWLEDGE_POLL_MS = 2500;
+
+type DownloadFormat = 'pdf' | 'epub' | 'json';
+
+const FORMAT_META: Record<DownloadFormat, { label: string; bg: string; text: string }> = {
+    pdf:  { label: 'PDF',  bg: 'bg-red-100 hover:bg-red-200',    text: 'text-red-700' },
+    epub: { label: 'EPUB', bg: 'bg-green-100 hover:bg-green-200', text: 'text-green-700' },
+    json: { label: 'JSON', bg: 'bg-blue-100 hover:bg-blue-200',   text: 'text-blue-700' },
+};
 
 type Props = {
     outputDir: string;
@@ -25,6 +33,41 @@ export function DownloadedList({ outputDir }: Props) {
         kg_graph?: string;
         error?: string;
     } | null>(null);
+
+    const [downloadPopover, setDownloadPopover] = useState<string | null>(null);
+    const popoverRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        if (!downloadPopover) return;
+        function onClickOutside(e: MouseEvent) {
+            if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
+                setDownloadPopover(null);
+            }
+        }
+        document.addEventListener('mousedown', onClickOutside);
+        return () => document.removeEventListener('mousedown', onClickOutside);
+    }, [downloadPopover]);
+
+    const triggerDownload = useCallback(
+        (item: DownloadListItem, fmt: DownloadFormat) => {
+            const q = new URLSearchParams({
+                book_name: item.folder_name,
+                format: fmt,
+            });
+            const trimmed = outputDir.trim();
+            if (trimmed) q.set('output_dir', trimmed);
+
+            const link = document.createElement('a');
+            link.href = `${API}/api/download-file?${q}`;
+            link.download = '';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            setDownloadPopover(null);
+        },
+        [outputDir],
+    );
 
     useEffect(() => {
         setPage(1);
@@ -271,6 +314,40 @@ export function DownloadedList({ outputDir }: Props) {
                                 </div>
                                 <div className="shrink-0 self-start sm:self-center flex flex-col items-stretch sm:items-end gap-1">
                                 <div className="flex items-center gap-2">
+                                    {item.formats && (item.formats.pdf || item.formats.epub || item.formats.json) && (
+                                        <div className="relative" ref={downloadPopover === item.path ? popoverRef : undefined}>
+                                            <button
+                                                type="button"
+                                                onClick={() => setDownloadPopover(downloadPopover === item.path ? null : item.path)}
+                                                className="px-3 py-1.5 text-xs font-medium text-zinc-700 border border-zinc-300 rounded-lg hover:bg-zinc-100 transition-colors flex items-center gap-1.5"
+                                            >
+                                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                                </svg>
+                                                下载
+                                            </button>
+                                            {downloadPopover === item.path && (
+                                                <div className="absolute right-0 top-full mt-1.5 z-30 bg-white rounded-lg shadow-lg border border-zinc-200 py-1.5 min-w-[120px] animate-in fade-in slide-in-from-top-1">
+                                                    <p className="px-3 py-1 text-[10px] text-zinc-400 font-medium uppercase tracking-wider">选择格式</p>
+                                                    {(['pdf', 'epub', 'json'] as DownloadFormat[])
+                                                        .filter((f) => item.formats?.[f])
+                                                        .map((f) => (
+                                                            <button
+                                                                key={f}
+                                                                type="button"
+                                                                onClick={() => triggerDownload(item, f)}
+                                                                className="w-full text-left px-3 py-1.5 text-xs hover:bg-zinc-50 transition-colors flex items-center gap-2"
+                                                            >
+                                                                <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${FORMAT_META[f].bg} ${FORMAT_META[f].text}`}>
+                                                                    {FORMAT_META[f].label}
+                                                                </span>
+                                                                <span className="text-zinc-600">下载 {FORMAT_META[f].label} 文件</span>
+                                                            </button>
+                                                        ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
                                     <button
                                         type="button"
                                         disabled={knowledgeBusy === item.path}

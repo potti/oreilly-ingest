@@ -41,9 +41,10 @@ export function DownloadedList({ outputDir }: Props) {
     const [obsidianBusy, setObsidianBusy] = useState<string | null>(null);
     const [obsidianResult, setObsidianResult] = useState<{
         path: string;
+        chapters: number;
         nodes: number;
         edges: number;
-        errors: number;
+        errorMsgs: string[];
     } | null>(null);
 
     useEffect(() => {
@@ -241,7 +242,7 @@ export function DownloadedList({ outputDir }: Props) {
                     body: JSON.stringify(body),
                 });
                 const raw = await res.text();
-                let parsed: { error?: string; nodes_created?: number; edges_created?: number; errors?: string[]; vault_path?: string } = {};
+                let parsed: { error?: string; nodes_created?: number; edges_created?: number; chapters_created?: number; errors?: string[]; vault_path?: string } = {};
                 try {
                     parsed = raw ? (JSON.parse(raw) as typeof parsed) : {};
                 } catch {
@@ -253,9 +254,10 @@ export function DownloadedList({ outputDir }: Props) {
                 } else {
                     setObsidianResult({
                         path: item.path,
+                        chapters: parsed.chapters_created ?? 0,
                         nodes: parsed.nodes_created ?? 0,
                         edges: parsed.edges_created ?? 0,
-                        errors: parsed.errors?.length ?? 0,
+                        errorMsgs: parsed.errors ?? [],
                     });
                 }
             } catch (err) {
@@ -442,10 +444,21 @@ export function DownloadedList({ outputDir }: Props) {
                                     <p className="text-xs text-left sm:text-right max-w-md break-words mt-1">{statsLine}</p>
                                 )}
                                 {obsidianResult && obsidianResult.path === item.path && (
-                                    <p className={`text-xs text-left sm:text-right mt-1 ${obsidianResult.errors > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
-                                        Obsidian: {obsidianResult.nodes} 节点, {obsidianResult.edges} 关系
-                                        {obsidianResult.errors > 0 && `, ${obsidianResult.errors} 错误`}
-                                    </p>
+                                    <div className="mt-1 text-xs text-left sm:text-right">
+                                        <p className={obsidianResult.errorMsgs.length > 0 ? 'text-amber-600' : 'text-emerald-600'}>
+                                            Obsidian: {obsidianResult.chapters} 章节
+                                            {obsidianResult.nodes > 0 && `, ${obsidianResult.nodes} 节点`}
+                                            {obsidianResult.edges > 0 && `, ${obsidianResult.edges} 关系`}
+                                            {obsidianResult.errorMsgs.length > 0 && ` (${obsidianResult.errorMsgs.length} 错误)`}
+                                        </p>
+                                        {obsidianResult.errorMsgs.length > 0 && (
+                                            <ul className="text-red-500 mt-0.5 space-y-0.5">
+                                                {obsidianResult.errorMsgs.map((msg, i) => (
+                                                    <li key={i} className="truncate max-w-xs" title={msg}>{msg}</li>
+                                                ))}
+                                            </ul>
+                                        )}
+                                    </div>
                                 )}
                                 </div>
                             </li>

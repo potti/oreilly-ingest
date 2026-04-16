@@ -56,7 +56,7 @@ def import_grain_to_obsidian(
     }
 
     agent_knowledge_path = knowledge_dir / "agent_knowledge.json"
-    kg_graph_path = knowledge_dir / "kg_graph.json"
+    kg_graph_path = knowledge_dir / "kg_graph_openclaw.json"
 
     if not agent_knowledge_path.is_file():
         result["errors"].append("agent_knowledge.json not found")

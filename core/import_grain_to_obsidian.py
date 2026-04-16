@@ -1,16 +1,17 @@
 """
-将 agent_grain_processor 生成的 KG + knowledge 导入 Obsidian Vault。
+将 agent_grain_processor 生成的 knowledge 导入 Obsidian Vault。
 
-支持两种模式：
-- 有 kg_graph.json 时：基于图谱节点+边创建 Obsidian 笔记 + wikilink
-- 仅有 agent_knowledge.json 时：基于章节 key_points 创建笔记
+写入 sources/ 目录（书籍来源溯源卡），包含：
+- 章节核心要点 + 行动建议
+- 书名/作者 wikilink
+- 概念关键词 wikilink（基于 KG 图谱节点，如有）
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,7 +23,7 @@ FOLDERS = {
     "Core_Concept": "concepts",
     "Agent_Type": "concepts",
     "Component": "concepts",
-    "Technique": "writing_styles",
+    "Technique": "concepts",
     "Production": "events",
 }
 
@@ -31,17 +32,44 @@ def safe_filename(name: str) -> str:
     return "".join(c if c.isalnum() or c in " _-()" else "_" for c in name).strip()[:100]
 
 
+def _load_book_metadata(knowledge_dir: Path) -> dict:
+    """Try to load rich book metadata from the exported .json in book root."""
+    book_root = knowledge_dir.parent
+    for json_file in sorted(book_root.glob("*.json")):
+        if json_file.name.startswith(".") or json_file.name == "agent_knowledge.json":
+            continue
+        try:
+            data = json.loads(json_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "metadata" in data:
+                meta = data["metadata"]
+                if isinstance(meta, dict) and meta.get("title"):
+                    return meta
+        except Exception:
+            continue
+    return {}
+
+
+def _inject_wikilinks(text: str, link_targets: set[str]) -> str:
+    """Replace occurrences of known entity/concept names with [[wikilinks]]."""
+    if not link_targets:
+        return text
+    for target in sorted(link_targets, key=len, reverse=True):
+        pattern = re.compile(re.escape(target), re.IGNORECASE)
+        wikilink = f"[[{target}]]"
+        if wikilink not in text:
+            text = pattern.sub(wikilink, text, count=1)
+    return text
+
+
 def import_grain_to_obsidian(
     knowledge_dir: str | Path,
     *,
     vault_path: str | Path | None = None,
 ) -> dict:
-    """Import KG graph + chapter key_points into an Obsidian vault.
+    """Import book chapter knowledge into an Obsidian vault.
 
-    - If kg_graph.json exists: create graph-based node files + wikilink edges.
-    - Always: create chapter summary files from agent_knowledge.json.
-
-    Returns a result dict with counts and any errors (never calls sys.exit).
+    Writes to sources/ (chapter cards with wikilinks).
+    If kg_graph_openclaw.json exists, also creates concept nodes + edges.
     """
     knowledge_dir = Path(knowledge_dir)
     vault = Path(vault_path or DEFAULT_OBSIDIAN_VAULT)
@@ -72,19 +100,54 @@ def import_grain_to_obsidian(
     if not isinstance(chapters, dict):
         chapters = {}
 
-    metadata = knowledge.get("metadata") if isinstance(knowledge, dict) else {}
-    if not isinstance(metadata, dict):
-        metadata = {}
+    ak_metadata = knowledge.get("metadata") if isinstance(knowledge, dict) else {}
+    if not isinstance(ak_metadata, dict):
+        ak_metadata = {}
 
-    book_title = metadata.get("source", "Unknown Book")
+    book_meta = _load_book_metadata(knowledge_dir)
+    book_title = book_meta.get("title") or ak_metadata.get("source") or knowledge_dir.parent.name
+    authors = book_meta.get("authors", [])
+    if not isinstance(authors, list):
+        authors = []
+    publisher = ""
+    publishers = book_meta.get("publishers") or book_meta.get("publisher")
+    if isinstance(publishers, list) and publishers:
+        publisher = publishers[0]
+    elif isinstance(publishers, str):
+        publisher = publishers
+
     now_iso = datetime.now(tz=timezone.utc).isoformat()
 
-    # --- Phase 1: Chapter summaries (always, from agent_knowledge.json) ---
-    chapters_dir = vault / "book_chapters"
+    # Collect known concept labels for wikilink injection
+    graph: dict | None = None
+    concept_labels: set[str] = set()
+    if kg_graph_path.is_file():
+        try:
+            graph = json.loads(kg_graph_path.read_text(encoding="utf-8"))
+            for node in (graph or {}).get("nodes", []):
+                if isinstance(node, dict) and node.get("label"):
+                    concept_labels.add(node["label"])
+        except Exception as e:
+            result["errors"].append(f"Failed to read kg_graph_openclaw.json: {e}")
+            graph = None
+
+    # Build wikilink targets: authors + concepts
+    wikilink_targets: set[str] = set()
+    for author in authors:
+        if isinstance(author, str) and len(author) >= 2:
+            wikilink_targets.add(author)
+    wikilink_targets |= concept_labels
+
+    # --- Phase 1: Chapter source cards → sources/ ---
+    sources_dir = vault / "sources"
     try:
-        chapters_dir.mkdir(parents=True, exist_ok=True)
+        sources_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        result["errors"].append(f"Cannot create book_chapters dir: {e}")
+        result["errors"].append(f"Cannot create sources dir: {e}")
+
+    author_display = ", ".join(authors) if authors else "Unknown"
+    book_link = f"[[{book_title}]]"
+    author_links = [f"[[{a}]]" for a in authors if isinstance(a, str) and len(a) >= 2]
 
     for ch_key, ch_data in chapters.items():
         if not isinstance(ch_data, dict):
@@ -99,25 +162,27 @@ def import_grain_to_obsidian(
             continue
 
         filename = safe_filename(f"{book_title} - {ch_title}") + ".md"
-        file_path = chapters_dir / filename
+        file_path = sources_dir / filename
 
         if file_path.is_file():
-            result["chapters_created"] += 1
             continue
+
+        fm_authors = json.dumps(author_links, ensure_ascii=False) if author_links else "[]"
 
         lines = [
             "---",
             f'title: "{ch_title}"',
             f'book: "{book_title}"',
+            f'authors: {fm_authors}',
             f'chapter_key: "{ch_key}"',
             f'tags: ["book-chapter", "grain-knowledge"]',
-            'source: "agent_grain_processor"',
+            'source: "oreilly-ingest"',
             f'imported_at: "{now_iso}"',
             "---",
             "",
             f"# {ch_title}",
             "",
-            f"> 来自 **{book_title}**",
+            f"> {book_link} — {author_display}",
             "",
         ]
 
@@ -126,13 +191,22 @@ def import_grain_to_obsidian(
             lines.append("")
             for kp in kps:
                 if isinstance(kp, str) and kp.strip():
-                    lines.append(f"- {kp}")
+                    lines.append(f"- {_inject_wikilinks(kp, wikilink_targets)}")
             lines.append("")
 
         if actionable and isinstance(actionable, str) and not actionable.startswith("处理失败"):
             lines.append("## 行动建议")
             lines.append("")
-            lines.append(actionable)
+            lines.append(_inject_wikilinks(actionable, wikilink_targets))
+            lines.append("")
+
+        if author_links:
+            lines.append("## 关联")
+            lines.append("")
+            lines.append(f"- 作者：{', '.join(author_links)}")
+            lines.append(f"- 书籍：{book_link}")
+            if publisher:
+                lines.append(f"- 出版：{publisher}")
             lines.append("")
 
         try:
@@ -141,15 +215,7 @@ def import_grain_to_obsidian(
         except OSError as e:
             result["errors"].append(f"Failed to write chapter {filename}: {e}")
 
-    # --- Phase 2: Graph nodes (only if kg_graph.json exists) ---
-    graph: dict | None = None
-    if kg_graph_path.is_file():
-        try:
-            graph = json.loads(kg_graph_path.read_text(encoding="utf-8"))
-        except Exception as e:
-            result["errors"].append(f"Failed to read kg_graph.json: {e}")
-            graph = None
-
+    # --- Phase 2: Graph concept nodes (optional) ---
     node_map: dict[str, str] = {}
 
     if graph and isinstance(graph, dict):
@@ -173,19 +239,21 @@ def import_grain_to_obsidian(
             filename = safe_filename(label) + ".md"
             file_path = target_dir / filename
 
-            lines = [
+            node_lines = [
                 "---",
                 f'title: "{label}"',
                 f'aliases: ["{node_id}"]',
                 f'tags: ["{ntype}", "grain-kg"]',
                 f'type: "{ntype}"',
-                'source: "agent_grain_processor"',
+                f'book: "{book_title}"',
+                'source: "oreilly-ingest"',
                 f'imported_at: "{now_iso}"',
                 "---",
                 "",
                 f"# {label}",
                 "",
-                f"**类型**：{ntype}",
+                f"**类型**：{ntype}  ",
+                f"**来源**：{book_link} — {author_display}",
                 "",
             ]
 
@@ -195,29 +263,31 @@ def import_grain_to_obsidian(
                 kps = ch_data.get("key_points")
                 if not isinstance(kps, list) or not kps:
                     continue
-                ch_title = ch_data.get("title", "")
+                ch_title_inner = ch_data.get("title", "")
                 matching_kps = [
                     kp for kp in kps
                     if isinstance(kp, str) and (label.lower() in kp.lower() or node_id.lower() in kp.lower())
                 ]
                 if matching_kps:
-                    lines.append(f"## 相关要点（{ch_title}）")
-                    lines.append("")
+                    lines_inner = [f"## 相关要点（{ch_title_inner}）", ""]
                     for kp in matching_kps:
-                        lines.append(f"- {kp}")
-                    lines.append("")
+                        lines_inner.append(f"- {kp}")
+                    lines_inner.append("")
+                    node_lines.extend(lines_inner)
 
-            lines.append("## 关系")
-            lines.append("")
+            node_lines.append("## 关系")
+            node_lines.append("")
 
+            existed = file_path.is_file()
             try:
-                file_path.write_text("\n".join(lines), encoding="utf-8")
+                file_path.write_text("\n".join(node_lines), encoding="utf-8")
                 node_map[node_id] = f"{folder}/{filename}"
-                result["nodes_created"] += 1
+                if not existed:
+                    result["nodes_created"] += 1
             except OSError as e:
                 result["errors"].append(f"Failed to write {folder}/{filename}: {e}")
 
-        # --- Phase 3: Append wikilinks for edges (idempotent) ---
+        # --- Phase 3: Wikilink edges (idempotent) ---
         for edge in graph.get("edges", []):
             if not isinstance(edge, dict):
                 continue

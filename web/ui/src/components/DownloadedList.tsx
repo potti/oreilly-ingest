@@ -38,6 +38,13 @@ export function DownloadedList({ outputDir }: Props) {
     const [downloadPopover, setDownloadPopover] = useState<string | null>(null);
     const popoverRef = useRef<HTMLDivElement | null>(null);
     const [drawerItem, setDrawerItem] = useState<DownloadListItem | null>(null);
+    const [obsidianBusy, setObsidianBusy] = useState<string | null>(null);
+    const [obsidianResult, setObsidianResult] = useState<{
+        path: string;
+        nodes: number;
+        edges: number;
+        errors: number;
+    } | null>(null);
 
     useEffect(() => {
         if (!downloadPopover) return;
@@ -219,6 +226,48 @@ export function DownloadedList({ outputDir }: Props) {
         [outputDir],
     );
 
+    const importToObsidian = useCallback(
+        async (item: DownloadListItem) => {
+            setObsidianBusy(item.path);
+            setObsidianResult(null);
+            try {
+                const body: { book_name: string; output_dir?: string } = { book_name: item.folder_name };
+                const trimmed = outputDir.trim();
+                if (trimmed) body.output_dir = trimmed;
+
+                const res = await fetch(`${API}/api/import-to-obsidian`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const raw = await res.text();
+                let parsed: { error?: string; nodes_created?: number; edges_created?: number; errors?: string[]; vault_path?: string } = {};
+                try {
+                    parsed = raw ? (JSON.parse(raw) as typeof parsed) : {};
+                } catch {
+                    /* ignore */
+                }
+                if (!res.ok && res.status !== 207) {
+                    const msg = parsed.error || `Request failed (HTTP ${res.status})`;
+                    setError(msg);
+                } else {
+                    setObsidianResult({
+                        path: item.path,
+                        nodes: parsed.nodes_created ?? 0,
+                        edges: parsed.edges_created ?? 0,
+                        errors: parsed.errors?.length ?? 0,
+                    });
+                }
+            } catch (err) {
+                logErrorDetail('import to obsidian failed', err);
+                setError(err instanceof Error ? err.message : String(err));
+            } finally {
+                setObsidianBusy(null);
+            }
+        },
+        [outputDir],
+    );
+
     const fmtTime = (iso: string) => {
         try {
             const d = new Date(iso);
@@ -375,9 +424,28 @@ export function DownloadedList({ outputDir }: Props) {
                                             ? `生成中…${typeof knowledgeProgress?.percentage === 'number' ? ` ${knowledgeProgress.percentage}%` : ''}`
                                             : '生成知识'}
                                     </button>
+                                    {item.knowledge_stats?.exists && (
+                                        <button
+                                            type="button"
+                                            disabled={obsidianBusy === item.path}
+                                            onClick={() => void importToObsidian(item)}
+                                            className="px-3 py-1.5 text-xs font-medium text-emerald-700 border border-emerald-300 rounded-lg hover:bg-emerald-50 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+                                        >
+                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                                            </svg>
+                                            {obsidianBusy === item.path ? '导入中…' : 'Obsidian'}
+                                        </button>
+                                    )}
                                 </div>
                                 {statsLine && (
                                     <p className="text-xs text-left sm:text-right max-w-md break-words mt-1">{statsLine}</p>
+                                )}
+                                {obsidianResult && obsidianResult.path === item.path && (
+                                    <p className={`text-xs text-left sm:text-right mt-1 ${obsidianResult.errors > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                                        Obsidian: {obsidianResult.nodes} 节点, {obsidianResult.edges} 关系
+                                        {obsidianResult.errors > 0 && `, ${obsidianResult.errors} 错误`}
+                                    </p>
                                 )}
                                 </div>
                             </li>

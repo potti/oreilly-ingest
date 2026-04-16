@@ -181,6 +181,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                 self._handle_set_output_dir(data)
             elif post_path == "/api/knowledge/images/delete":
                 self._handle_knowledge_images_delete(data)
+            elif post_path == "/api/import-to-obsidian":
+                self._handle_import_to_obsidian(data)
             else:
                 self._send_json({"error": "Not found"}, 404)
         except Exception:
@@ -773,6 +775,53 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             "failed": failed,
             "remaining_count": remaining,
         })
+
+    def _handle_import_to_obsidian(self, data: dict):
+        """Import a book's KG graph into an Obsidian vault.
+
+        Body: book_name (required), output_dir (optional), vault_path (optional).
+        """
+        book_name = (data.get("book_name") or "").strip()
+        if not book_name:
+            self._send_json({"error": "book_name required"}, 400)
+            return
+
+        output_plugin = self.kernel["output"]
+        out_dir_str = (data.get("output_dir") or "").strip()
+        if out_dir_str:
+            ok, msg, out_dir = output_plugin.validate_dir(out_dir_str)
+            if not ok or out_dir is None:
+                self._send_json({"error": msg or "Invalid output directory"}, 400)
+                return
+        else:
+            out_dir = output_plugin.get_default_dir()
+
+        book_dir = self._resolve_book_dir_by_name(book_name, out_dir)
+        if book_dir is None:
+            self._send_json({"error": f"Book directory not found: {book_name}"}, 404)
+            return
+
+        knowledge_dir = book_dir / "Knowledge"
+        if not knowledge_dir.is_dir():
+            self._send_json({"error": "Knowledge directory does not exist"}, 404)
+            return
+
+        vault_path = (data.get("vault_path") or "").strip() or None
+
+        from core.import_grain_to_obsidian import import_grain_to_obsidian
+
+        try:
+            result = import_grain_to_obsidian(
+                knowledge_dir,
+                vault_path=vault_path,
+            )
+        except Exception as e:
+            LOGGER.exception("import_to_obsidian failed book=%s", book_name)
+            self._send_json({"error": f"Import failed: {e}"}, 500)
+            return
+
+        status = 200 if not result.get("errors") else 207
+        self._send_json(result, status)
 
     def _handle_set_output_dir(self, data: dict):
         """Handle output directory selection - browse or direct path."""
